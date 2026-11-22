@@ -1,0 +1,57 @@
+#include <omg/unreachable.h>
+#include <poincare/src/expression/angle.h>
+#include <poincare/trigonometry.h>
+
+namespace Poincare {
+
+double Trigonometry::PiInAngleUnit(AngleUnit angleUnit) {
+  switch (angleUnit) {
+    case AngleUnit::None:
+      OMG_UNREACHABLE;
+      [[fallthrough]];
+    case AngleUnit::Radian:
+      return M_PI;
+    case AngleUnit::Degree:
+      return 180.0;
+#if !POINCARE_UNIT_ONLY_ANGLES
+    case AngleUnit::Gradian:
+      return 200.0;
+#endif
+  }
+  OMG_UNREACHABLE;
+}
+
+double Trigonometry::ConvertAngleToRadian(double angle, AngleUnit angleUnit) {
+  return angleUnit != AngleUnit::Radian
+             ? angle * M_PI / PiInAngleUnit(angleUnit)
+             : angle;
+}
+
+template <typename T>
+std::complex<T> Trigonometry::ConvertToRadian(const std::complex<T> c,
+                                              AngleUnit angleUnit) {
+  if (angleUnit != AngleUnit::Radian) {
+    return c * std::complex<T>((T)M_PI / (T)PiInAngleUnit(angleUnit));
+  }
+  return c;
+}
+
+template <typename T>
+std::complex<T> Trigonometry::ConvertRadianToAngleUnit(const std::complex<T> c,
+                                                       AngleUnit angleUnit) {
+  if (angleUnit != AngleUnit::Radian) {
+    return c * std::complex<T>((T)PiInAngleUnit(angleUnit) / (T)M_PI);
+  }
+  return c;
+}
+
+template std::complex<float> Trigonometry::ConvertToRadian<float>(
+    std::complex<float>, AngleUnit);
+template std::complex<double> Trigonometry::ConvertToRadian<double>(
+    std::complex<double>, AngleUnit);
+template std::complex<float> Trigonometry::ConvertRadianToAngleUnit<float>(
+    std::complex<float>, AngleUnit);
+template std::complex<double> Trigonometry::ConvertRadianToAngleUnit<double>(
+    std::complex<double>, AngleUnit);
+
+}  // namespace Poincare

@@ -1,0 +1,48 @@
+#pragma once
+
+#include <escher/glyphs_view.h>
+#include <escher/layout_view.h>
+#include <escher/scroll_view_data_source.h>
+#include <escher/scrollable_view.h>
+#include <escher/text_format.h>
+#include <escher/theme/components.h>
+
+namespace Escher {
+
+class ScrollableLayoutView : public ScrollableView<ScrollView::ArrowDecorator>,
+                             public ScrollViewDataSource,
+                             public CellWidget {
+ public:
+  ScrollableLayoutView(Responder* parentResponder, KDCoordinate leftRightMargin,
+                       KDCoordinate topBottomMargin,
+                       const TextFormat& format = {});
+  ScrollableLayoutView(const TextFormat& format = {});
+  const Poincare::Layout& layout() const override;
+  KDFont::Size font() const { return m_layoutView.font(); }
+  void setFont(KDFont::Size font) {
+    m_layoutView.setFont(font);
+    decorator()->setFont(font);
+  }
+  void setLayout(const Poincare::Layout& layout);
+  void setTextColor(ThemeComponent color) { m_layoutView.setTextColor(color); }
+  void setBackgroundColor(ThemeComponent backgroundColor) override;
+  void setExpressionBackgroundColor(ThemeComponent backgroundColor);
+
+  // CellWidget
+  const View* view() const override { return this; }
+  Responder* responder() override { return this; }
+  void defaultInitialization(CellWidget::Type type) override {
+    m_layoutView.defaultInitialization(type);
+  }
+  void setHighlighted(bool highlighted) override;
+
+  // Only highlight the expression frame
+  void setExpressionHighlighted(bool highlight) {
+    m_layoutView.setHighlighted(highlight);
+  }
+
+ private:
+  LayoutView m_layoutView;
+};
+
+}  // namespace Escher

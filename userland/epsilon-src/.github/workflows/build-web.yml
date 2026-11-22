@@ -1,0 +1,45 @@
+name: Web Build
+on:
+  workflow_dispatch:
+    inputs:
+      debug:
+        type: boolean
+        default: false
+
+env:
+  MAKEFLAGS: -j2
+  DEBUG: ${{ fromJSON(github.event.inputs.debug) && '1' || '0' }}
+  OUTPUT_DIR: epsilon/output/${{ fromJSON(github.event.inputs.debug) && 'debug' || 'release' }}/web
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Read Emscripten version
+        run: echo "EMSDK_VERSION=$(cat .emsdk-version)" >> $GITHUB_ENV
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: web
+          emsdk-version: ${{ env.EMSDK_VERSION }}
+      - name: Build
+        run: $DOCKER_RUN "make DEBUG=$DEBUG PLATFORM=web epsilon.html epsilon.htmlpack.zip"
+      - name: Zip epsilon.html
+        # Zip manually to prevent actions/upload-artifact from corrupting the file
+        run: zip -j ${{ env.OUTPUT_DIR }}/epsilon.zip ${{ env.OUTPUT_DIR }}/epsilon.html
+      - name: Upload epsilon.zip
+        uses: actions/upload-artifact@v6
+        with:
+          name: epsilon.zip
+          path: ${{ env.OUTPUT_DIR }}/epsilon.zip
+          compression-level: 0
+          retention-days: 3
+      - name: Upload htmlpack.zip
+        uses: actions/upload-artifact@v6
+        with:
+          name: htmlpack.zip
+          path: ${{ env.OUTPUT_DIR }}/epsilon.htmlpack.zip
+          compression-level: 0
+          retention-days: 3

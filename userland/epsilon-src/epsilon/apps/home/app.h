@@ -1,0 +1,37 @@
+#pragma once
+
+#include <escher/app.h>
+#include <escher/container.h>
+#include <escher/selectable_table_view_data_source.h>
+
+#include "controller.h"
+
+namespace Home {
+
+class App : public Escher::App {
+ public:
+  class Descriptor : public Escher::App::Descriptor {
+   public:
+    I18n::Message name() const override;
+    I18n::Message upperName() const override;
+  };
+  class Snapshot : public Escher::App::Snapshot,
+                   public Escher::SelectableTableViewDataSource {
+   public:
+    App* unpack(Escher::Container* container) override;
+    const Descriptor* descriptor() const override;
+  };
+  static App* app() { return static_cast<App*>(Escher::App::app()); }
+  Snapshot* snapshot() {
+    return static_cast<Snapshot*>(Escher::App::snapshot());
+  }
+  const Snapshot* snapshot() const {
+    return static_cast<const Snapshot*>(Escher::App::snapshot());
+  }
+
+ private:
+  App(Snapshot* snapshot);
+  Controller m_controller;
+};
+
+}  // namespace Home

@@ -1,0 +1,148 @@
+#pragma once
+
+#include <assert.h>
+#include <ion/storage/file_system.h>
+#include <omg/global_box.h>
+#include <poincare/symbol_store_interface.h>
+
+#include <array>
+
+#include "continuous_function_store.h"
+#include "sequence_cache.h"
+#include "sequence_context.h"
+#include "sequence_store.h"
+
+namespace Shared {
+
+class GlobalStore final : public Poincare::SymbolStoreInterface {
+  friend class GlobalContextAccessor;
+  friend class OMG::GlobalBox<GlobalStore>;
+
+ public:
+  constexpr static const char* k_extensions[] = {
+      Ion::Storage::expressionExtension,
+      Ion::Storage::matrixExtension,
+      Ion::Storage::functionExtension,
+      Ion::Storage::listExtension,
+      Ion::Storage::sequenceExtension,
+      Ion::Storage::regressionFunctionExtension,
+      Ion::Storage::regressionListExtension,
+      Ion::Storage::parametricComponentExtension};
+  constexpr static int k_numberOfExtensions = std::size(k_extensions);
+
+  constexpr static int k_allOrders = 0;
+
+  static void Init();
+
+  // Storage information
+  static bool UserNameIsFree(const char* baseName);
+
+  /* These direct accessors to an expression or a layout contained in a record
+   * should be avoided. expressionForSymbol should be the preferred method.
+   */
+  static Poincare::UserExpression ExpressionFromStorage(
+      Ion::Storage::Record record);
+  static Poincare::Layout LayoutForRecord(Ion::Storage::Record record);
+
+  // Destroy records
+  static void DestroyRecordsBaseNamedWithoutExtension(const char* baseName,
+                                                      const char* extension);
+  static void DeleteParametricComponentsWithBaseName(char* baseName,
+                                                     size_t baseNameLength,
+                                                     size_t bufferSize);
+  static void DeleteParametricComponentsOfRecord(Ion::Storage::Record record);
+  static void StoreParametricComponentsOfRecord(Ion::Storage::Record record);
+  // Delete derivative of specified order, or all derivatives if order is 0
+  static void DeleteDerivativeOfRecord(Ion::Storage::Record record,
+                                       uint8_t order = k_allOrders);
+
+  bool setExpressionForUserSymbol(
+      const Poincare::Internal::Tree* expression,
+      const Poincare::Internal::Tree* symbol) override;
+  void storageDidChangeForRecord(const Ion::Storage::Record record);
+  SequenceContext& sequenceContext() { return m_sequenceContext; }
+  const SequenceContext& sequenceContext() const { return m_sequenceContext; }
+  void tidyStores();
+  void prepareForNewApp();
+  // Reset all functions and sequences
+  void reset();
+  /* Reset all store entries (functions, sequences, expressions, matrices,
+   * lists, regressions and parametric components) */
+  void resetAll();
+
+ private:
+  /* REFACTOR: SequenceStore, SequenceCache and SequenceContext should be
+   * grouped in a single interface. SequenceContext could be the const version
+   * of SequenceStore (like ContinuousFunctionContext and
+   * ContinuousFunctionStore). */
+  static OMG::GlobalBox<SequenceStore> s_sequenceStore;
+  static OMG::GlobalBox<SequenceCache> s_sequenceCache;
+  static OMG::GlobalBox<ContinuousFunctionStore> s_continuousFunctionStore;
+
+  /* GlobalStore is a singleton. The unique instance can be accessed through
+   * GlobalContextAccessor */
+  GlobalStore() : m_sequenceContext(this, s_sequenceStore){};
+
+  static const Poincare::Internal::Tree* TreeFromStorage(
+      Ion::Storage::Record record);
+
+  // Symbol context override
+
+  SymbolDescription symbolDescriptionForIdentifier(
+      std::string_view identifier) const override;
+
+  // Expression setters
+
+  /* This modifies the expression. */
+  Ion::Storage::Record::ErrorStatus setExpressionForUserVariable(
+      Poincare::UserExpression& expression, const char* name,
+      Ion::Storage::Record previousRecord);
+  Ion::Storage::Record::ErrorStatus setExpressionForUserFunction(
+      const Poincare::UserExpression& expression,
+      const Poincare::UserExpression& symbol,
+      Ion::Storage::Record previousRecord);
+  // Record getter
+  static Ion::Storage::Record UserSymbolRecordWithBaseName(const char* name);
+
+  SequenceContext m_sequenceContext;
+};
+
+using GlobalContext = const GlobalStore;
+
+class GlobalContextAccessor {
+ public:
+  // const access
+  static inline const Shared::GlobalContext& Context() {
+    return *s_globalStore.get();
+  }
+  static inline const Shared::SequenceContext& SequenceContext() {
+    return Context().sequenceContext();
+  }
+
+  static inline const Shared::ContinuousFunctionContext&
+  ContinuousFunctionContext() {
+    return *GlobalStore::s_continuousFunctionStore.get();
+  }
+
+  // mutable access
+  static inline Shared::GlobalStore& Store() { return *s_globalStore.get(); }
+
+  static inline Shared::ContinuousFunctionStore& ContinuousFunctionStore() {
+    return *GlobalStore::s_continuousFunctionStore.get();
+  }
+
+  static inline Shared::SequenceStore& SequenceStore() {
+    return *GlobalStore::s_sequenceStore.get();
+  }
+
+  static inline Shared::SequenceCache& SequenceCache() {
+    return *GlobalStore::s_sequenceCache.get();
+  }
+
+  static inline void Init() { s_globalStore.init(); }
+
+ private:
+  static inline OMG::GlobalBox<Shared::GlobalStore> s_globalStore;
+};
+
+}  // namespace Shared

@@ -1,0 +1,94 @@
+#pragma once
+
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/tree.h>
+
+#include "approximation.h"
+#include "dimension.h"
+
+namespace Poincare::Internal {
+
+struct Matrix {
+  static uint8_t NumberOfRows(const Tree* matrix) {
+    assert(matrix->isMatrix());
+    return matrix->nodeValue(0);
+  }
+  static uint8_t NumberOfColumns(const Tree* matrix) {
+    assert(matrix->isMatrix());
+    return matrix->nodeValue(1);
+  }
+  static MatrixDimension GetMatrixDimension(const Tree* matrix) {
+    return {NumberOfRows(matrix), NumberOfColumns(matrix)};
+  }
+  static void SetNumberOfRows(Tree* matrix, uint8_t rows) {
+    assert(matrix->isMatrix());
+    matrix->setNodeValue(0, rows);
+  }
+  static void SetNumberOfColumns(Tree* matrix, uint8_t cols) {
+    assert(matrix->isMatrix());
+    matrix->setNodeValue(1, cols);
+  }
+  static void SetDimensions(Tree* matrix, uint8_t rows, uint8_t cols) {
+    assert(matrix->isMatrix());
+    SetNumberOfRows(matrix, rows);
+    SetNumberOfColumns(matrix, cols);
+  }
+  static Tree* Child(Tree* matrix, uint8_t row, uint8_t col) {
+    assert(col < NumberOfColumns(matrix));
+    return matrix->child(row * NumberOfColumns(matrix) + col);
+  }
+  static const Tree* Child(const Tree* matrix, uint8_t row, uint8_t col) {
+    assert(col < NumberOfColumns(matrix));
+    return matrix->child(row * NumberOfColumns(matrix) + col);
+  }
+  static Tree* Zero(MatrixDimension d);
+  static Tree* Identity(MatrixDimension d);
+  static Tree* Identity(const Tree* n);
+  static Tree* Trace(const Tree* matrix);
+
+  /* The matrix operation methods (Addition, Multiplication etc.) can be called
+   * either during an exact reduction or during an approximation. If called
+   * during an exact reduction, the approximator pointer must be nullptr. If
+   * called during an approximation, a Private::Approximator pointer must be
+   * passed. */
+  /* TODO: rework these Matrix static methods so that they also can be
+   * Approximator methods, instead of injecting an Approximator pointer */
+
+  static Tree* Addition(
+      const Tree* matrix1, const Tree* matrix2,
+      Approximation::Private::Approximator* approximator = nullptr);
+  static Tree* ScalarMultiplication(
+      const Tree* scalar, const Tree* matrix,
+      Approximation::Private::Approximator* approximator = nullptr);
+  static Tree* Multiplication(
+      const Tree* matrix1, const Tree* matrix2,
+      Approximation::Private::Approximator* approximator = nullptr);
+  static Tree* Transpose(const Tree* matrix);
+  /* Return true if the matrix has been successfully canonized, false otherwise.
+   * In the latter case, leave determinant uninitialized. A canonized matrix is
+   * in its row echelon form (reduced if [reducedForm]). If [approximate] is
+   * true, everything will be approximated. A reduced expression is otherwise
+   * expected. If [forceCanonization] is false, canonization will be escaped if
+   * any term cannot be approximated. */
+  static bool RowCanonize(
+      Tree* matrix, bool reducedForm = true, Tree** determinant = nullptr,
+      Approximation::Private::Approximator* approximator = nullptr,
+      bool forceCanonization = false);
+  constexpr static int k_failedToCanonizeRank = -1;
+  /* Return k_failedToCanonizeRank if the matrix could not be canonized
+   * (might contain undefined or invalid values) */
+  static int CanonizeAndRank(Tree* matrix, bool forceCanonization = false);
+  static int RankOfCanonized(const Tree* matrix);
+  static Tree* Inverse(
+      const Tree* matrix,
+      Approximation::Private::Approximator* approximator = nullptr);
+  static Tree* Power(
+      const Tree* matrix, int exponent,
+      Approximation::Private::Approximator* approximator = nullptr);
+  static bool SystematicReduceMatrixOperation(Tree* e);
+
+  // REFACTOR: the maximum size of a matrix could be reduced.
+  constexpr static size_t k_maximumSize = NAry::k_maxNumberOfChildren;
+};
+
+}  // namespace Poincare::Internal

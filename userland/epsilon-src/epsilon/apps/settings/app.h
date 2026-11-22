@@ -1,0 +1,29 @@
+#pragma once
+
+#include <apps/shared/shared_app.h>
+
+#include "main_controller.h"
+
+namespace Settings {
+
+class App : public Shared::SharedApp {
+ public:
+  class Descriptor : public Escher::App::Descriptor {
+   public:
+    I18n::Message name() const override;
+    I18n::Message upperName() const override;
+    Escher::ThemedImage icon() const override;
+  };
+  class Snapshot : public Shared::SharedApp::Snapshot {
+   public:
+    App* unpack(Escher::Container* container) override;
+    const Descriptor* descriptor() const override;
+  };
+
+ private:
+  App(Snapshot* snapshot);
+  MainController m_mainController;
+  Escher::StackViewController::Default m_stackViewController;
+};
+
+}  // namespace Settings

@@ -1,0 +1,30 @@
+#pragma once
+
+#include <apps/shared/store_controller.h>
+
+#include "../store.h"
+#include "store_parameter_controller.h"
+
+namespace Regression {
+
+class StoreController : public Shared::StoreController {
+ public:
+  StoreController(Escher::Responder* parentResponder, Store* store,
+                  Escher::ButtonRowController* header);
+  Model* selectedModel() {
+    return static_cast<Store*>(m_store)->modelForSeries(selectedSeries());
+  }
+
+ private:
+  Escher::InputViewController* inputViewController() override;
+  Escher::SelectableViewController* columnParameterController() override {
+    return &m_storeParameterController;
+  }
+  Shared::ColumnParameters* columnParameters() override {
+    return &m_storeParameterController;
+  }
+  void clearSelectedColumn() override;
+  StoreParameterController m_storeParameterController;
+};
+
+}  // namespace Regression

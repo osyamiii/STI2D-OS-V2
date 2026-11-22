@@ -1,0 +1,41 @@
+#pragma once
+
+#include <escher/context_provider.h>
+#include <ion/events.h>
+#include <poincare/layout.h>
+
+namespace Escher {
+
+class LayoutField;
+
+class LayoutFieldDelegate : public ContextProvider {
+ public:
+  virtual bool layoutFieldShouldFinishEditing(LayoutField* layoutField,
+                                              Ion::Events::Event event) {
+    return event == Ion::Events::OK || event == Ion::Events::EXE;
+  }
+  virtual bool layoutFieldDidReceiveEvent(LayoutField* layoutField,
+                                          Ion::Events::Event event) {
+    return false;
+  }
+  virtual bool layoutFieldDidFinishEditing(LayoutField* layoutField,
+                                           Ion::Events::Event event) {
+    return false;
+  }
+  virtual void layoutFieldDidAbortEditing(LayoutField* layoutField) {}
+  virtual void layoutFieldDidHandleEvent(LayoutField* layoutField) {}
+  virtual void layoutFieldDidChangeSize(LayoutField* layoutField) {}
+
+  virtual bool shouldInsertTextForStoEvent(
+      Escher::LayoutField* layoutField) const {
+    return false;
+  }
+  virtual bool shouldInsertTextForAnsEvent(
+      Escher::LayoutField* layoutField) const {
+    return false;
+  }
+  virtual void updateRepetitionIndexes(LayoutField* layoutField,
+                                       Ion::Events::Event event) {}
+};
+
+}  // namespace Escher

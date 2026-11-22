@@ -1,0 +1,141 @@
+#include "symbol_store.h"
+
+#include <omg/string.h>
+#include <poincare/helpers/store.h>
+#include <poincare/src/expression/k_tree.h>
+#include <poincare/src/expression/symbol.h>
+#include <poincare/src/expression/variables.h>
+#include <poincare/src/layout/parser.h>
+#include <poincare/src/memory/tree.h>
+#include <poincare/symbol_context.h>
+#include <poincare/test/helper.h>
+#include <poincare/user_expression.h>
+
+#include <algorithm>
+#include <string_view>
+
+namespace PoincareTest {
+using Tree = Poincare::Internal::Tree;
+
+std::string_view SymbolNameFromTree(const Tree* symbolTree) {
+  return std::string_view(Poincare::Internal::Symbol::GetName(symbolTree));
+}
+
+void store(const char* storeExpression,
+           Poincare::SymbolStoreInterface& symbolStore) {
+  Poincare::UserExpression storeUserExpression =
+      Poincare::UserExpression::Parse(storeExpression, symbolStore);
+  symbolStore.setExpressionForUserSymbol(
+      Poincare::StoreHelper::Value(storeUserExpression),
+      Poincare::StoreHelper::Symbol(storeUserExpression));
+}
+
+void store(const char* symbol, const char* expression,
+           Poincare::SymbolStoreInterface& symbolStore) {
+  symbolStore.setExpressionForUserSymbol(
+      Poincare::UserExpression::Parse(expression, symbolStore),
+      Poincare::UserExpression::Parse(symbol, symbolStore,
+                                      ParsingParameters{.isAssignment = true}));
+}
+
+SymbolStore::SymbolWithExpression::SymbolWithExpression(
+    std::string_view name, Poincare::SymbolContext::SymbolType type,
+    const Tree* e)
+    : m_type{type} {
+  assert(name.length() <= k_maxNameSize);
+  m_name = name;
+  assert(e->treeSize() <= k_expressionBufferSize);
+  e->copyTreeTo(m_expressionBuffer.data());
+}
+
+const Poincare::Internal::Tree* SymbolStore::SymbolWithExpression::expression()
+    const {
+  return Tree::FromBlocks(m_expressionBuffer.data());
+}
+
+Poincare::SymbolContext::SymbolDescription
+SymbolStore::symbolDescriptionForIdentifier(std::string_view identifier) const {
+  const SymbolWithExpression* existingSymbol = findSymbolInStore(identifier);
+  if (!existingSymbol) {
+    return {};
+  }
+  return {existingSymbol->type(), existingSymbol->expression()};
+}
+
+const SymbolStore::SymbolWithExpression* SymbolStore::findSymbolInStore(
+    std::string_view symbolName) const {
+  const SymbolWithExpression* result =
+      std::find_if(m_symbolTable.begin(), m_symbolTable.end(),
+                   [symbolName](const SymbolWithExpression& storedSymbol) {
+                     return symbolName == storedSymbol.name();
+                   });
+  if (result == m_symbolTable.end()) {
+    return nullptr;
+  }
+  return result;
+}
+
+SymbolStore::SymbolWithExpression* SymbolStore::findSymbolInStore(
+    std::string_view symbolName) {
+  SymbolWithExpression* result =
+      std::find_if(m_symbolTable.begin(), m_symbolTable.end(),
+                   [symbolName](const SymbolWithExpression& storedSymbol) {
+                     return symbolName == storedSymbol.name();
+                   });
+  if (result == m_symbolTable.end()) {
+    return nullptr;
+  }
+  return result;
+}
+
+bool SymbolStore::push(const Tree* expression, std::string_view symbolName,
+                       SymbolType symbolType) {
+  SymbolWithExpression* existingSymbol = findSymbolInStore(symbolName);
+  if (existingSymbol) {
+    *existingSymbol = SymbolWithExpression(symbolName, symbolType, expression);
+    return true;
+  }
+  m_symbolTable.push(SymbolWithExpression(symbolName, symbolType, expression));
+  return true;
+}
+
+bool SymbolStore::setExpressionForUserVariable(const Tree* expression,
+                                               std::string_view symbolName) {
+  SymbolType symbolType = SymbolType::Variable;
+  if (expression->isList()) {
+    symbolType = SymbolType::List;
+  }
+  return push(expression, symbolName, symbolType);
+}
+
+bool SymbolStore::setExpressionForUserFunctionOrSequence(
+    const Poincare::Internal::Tree* expression,
+    const Poincare::Internal::Tree* functionalSymbol) {
+  assert(functionalSymbol->isUserFunction() ||
+         functionalSymbol->isUserSequence());
+  const Tree* variableSymbol = functionalSymbol->child(0);
+  assert(variableSymbol->isUserVariable());
+  // Replace the user symbol with KUnknown in the expression
+  Tree* storedTree = expression->cloneTree();
+  Poincare::Internal::Variables::ReplaceSymbolWithTree(
+      storedTree, variableSymbol, Poincare::Internal::KUnknownSymbol);
+
+  bool success =
+      push(storedTree, SymbolNameFromTree(functionalSymbol),
+           functionalSymbol->isUserFunction() ? SymbolType::Function
+                                              : SymbolType::Sequence);
+  storedTree->removeTree();
+  return success;
+}
+
+bool SymbolStore::setExpressionForUserSymbol(const Tree* expression,
+                                             const Tree* symbol) {
+  assert(symbol->isUserSymbol());
+  if (symbol->isUserVariable()) {
+    return setExpressionForUserVariable(expression, SymbolNameFromTree(symbol));
+  }
+
+  return setExpressionForUserFunctionOrSequence(expression, symbol);
+}
+
+}  // namespace PoincareTest

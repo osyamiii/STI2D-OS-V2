@@ -1,0 +1,254 @@
+#include "expression_model.h"
+
+#include <apps/apps_container.h>
+#include <apps/global_preferences.h>
+#include <assert.h>
+#include <omg/utf8_helper.h>
+#include <poincare/helpers/symbol_pool.h>
+#include <poincare/k_tree.h>
+#include <poincare/layout.h>
+#include <poincare/symbol_context.h>
+#include <poincare/user_expression.h>
+#include <shared/global_store.h>
+#include <string.h>
+
+#include <algorithm>
+
+#include "poincare_helpers.h"
+
+using namespace Ion;
+using namespace Poincare;
+
+namespace Shared {
+
+ExpressionModel::ExpressionModel()
+    : m_circular(-1),
+      m_expressionComplexFormat(MemoizedComplexFormat::NotMemoized) {}
+
+void ExpressionModel::text(const Storage::Record* record, char* buffer,
+                           size_t bufferSize, CodePoint symbol) const {
+  assert(record->fullName() != nullptr);
+  UserExpression e = ExpressionModel::expressionClone(record);
+  if (e.isUninitialized()) {
+    if (bufferSize > 0) {
+      buffer[0] = 0;
+    }
+    return;
+  }
+  if (symbol != 0) {
+    e = e.cloneAndReplaceUnknownWithSymbol(symbol);
+  }
+  size_t serializedSize = e.serialize(std::span<char>(buffer, bufferSize));
+  if (serializedSize >= bufferSize - 1) {
+    // It is very likely that the buffer is overflowed
+    buffer[0] = 0;
+  }
+}
+
+bool ExpressionModel::isCircularlyDefined(const Storage::Record* record) const {
+  if (m_circular == -1) {
+    UserExpression e = expressionClone(record).cloneAndReplaceSymbols(
+        GlobalContextAccessor::Context());
+    m_circular = e.isUninitialized();
+  }
+  return m_circular;
+}
+
+ComplexFormat ExpressionModel::complexFormat(
+    const Storage::Record* record) const {
+  if (m_expressionComplexFormat == MemoizedComplexFormat::NotMemoized) {
+    UserExpression expression = ExpressionModel::expressionClone(record);
+    if (!expression.isUninitialized() &&
+        (expression.preferredComplexFormat(
+             ComplexFormat::Real, GlobalContextAccessor::Context(),
+             Poincare::SymbolicComputation::ReplaceDefinedSymbols) !=
+         ComplexFormat::Real)) {
+      m_expressionComplexFormat = MemoizedComplexFormat::Complex;
+    } else {
+      m_expressionComplexFormat = MemoizedComplexFormat::Any;
+    }
+  }
+  assert(m_expressionComplexFormat != MemoizedComplexFormat::NotMemoized);
+  ComplexFormat userComplexFormat = SharedGlobalPrefs().complexFormat();
+  if (m_expressionComplexFormat == MemoizedComplexFormat::Complex &&
+      userComplexFormat == ComplexFormat::Real) {
+    return Preferences::k_defaultComplexFormatIfNotReal;
+  }
+  return userComplexFormat;
+}
+
+const SystemExpression& ExpressionModel::expressionReduced(
+    const Storage::Record* record) const {
+  /* TODO
+   * By calling isCircularlyDefined and then Simplify, the expression tree is
+   * browsed twice. Note that Simplify does ALMOST the job of
+   * isCircularlyDefined, since Simplify reduces the expression, replaces the
+   * symbols it encounters (see SymbolAbstract::Expand). isCircularlyDefined
+   * should probably be removed. The difficulty relies in the ambiguous
+   * conventions about the values returned or set when a symbol has no proper
+   * expression: for example,
+   *  - GlobalStore::symbolDescriptionForIdentifier returns an uninitialized
+   *    expression,
+   *  - so do Expression::replaceSymbols and SymbolAbstract::Expand,
+   *  - Symbol::shallowReduce and Function::shallowReduce and
+   *    Expression::deepReplaceReplaceableSymbols return Undefined or
+   *    the expression unaltered according to symbolic-computation setting,
+   *  - expressionReduced returns Undefined if the expression
+   *    isCircularlyDefined but leaves the expression unchanged if Simplify
+   *    returns an uninitialized expression...
+   */
+  if (m_expression.isUninitialized()) {
+    assert(record->fullName() != nullptr);
+    if (isCircularlyDefined(record)) {
+      m_expression = SystemExpression::Undefined();
+    } else {
+      UserExpression userExpression = UserExpression::ExpressionFromAddress(
+          expressionAddress(record), expressionSize(record));
+      /* 'Simplify' routine might need to call expressionReduced on the very
+       * same function. So we need to keep a valid m_expression while executing
+       * 'Simplify'. Thus, we use a temporary expression. */
+      m_expression = userExpression.cloneAndReduce(SimplificationParameters{
+          .user = {.complexFormat = complexFormat(record),
+                   .angleUnit = SharedGlobalPrefs().angleUnit(),
+                   .context = GlobalContextAccessor::Context()},
+          .projectionPolicy = {.symbolic =
+                                   SymbolicComputation::ReplaceDefinedSymbols},
+          .reductionPolicy = {.target = ReductionTarget::System}});
+    }
+  }
+  return m_expression;
+}
+
+UserExpression ExpressionModel::expressionClone(
+    const Storage::Record* record) const {
+  assert(record->fullName() != nullptr);
+  /* A new Expression has to be created at each call (because it might be
+   * tempered with after calling) */
+  return UserExpression::ExpressionFromAddress(expressionAddress(record),
+                                               expressionSize(record));
+  /* TODO
+   * The substitution of UCodePointUnknown back and forth is done in the
+   * methods layout, setContent (through buildExpressionFromLayout), layout and
+   * also in GlobalStore::symbolDescriptionForIdentifier and
+   * GlobalStore::setExpressionForUserSymbol. When getting the expression,
+   * the substitutions may probably be gathered here.
+   */
+}
+
+const Internal::Tree* ExpressionModel::expressionTree(
+    const Storage::Record* record) const {
+  assert(record->fullName() != nullptr);
+  /* A new Expression has to be created at each call (because it might be
+   * tempered with after calling) */
+  assert(expressionSize(record) > 0);
+  return UserExpression::TreeFromAddress(expressionAddress(record));
+}
+
+Layout ExpressionModel::layout(const Storage::Record* record,
+                               CodePoint symbol) const {
+  if (m_layout.isUninitialized()) {
+    assert(record->fullName() != nullptr);
+    UserExpression clone = ExpressionModel::expressionClone(record);
+    if (!clone.isUninitialized() && symbol != 0) {
+      clone = clone.cloneAndReplaceUnknownWithSymbol(symbol);
+    }
+    m_layout = PoincareHelpers::CreateLayout(
+        clone, Escher::App::app()->localContext(), true);
+    if (m_layout.isUninitialized()) {
+      m_layout = KRackL();
+    }
+  }
+  return m_layout;
+}
+
+Ion::Storage::Record::ErrorStatus ExpressionModel::setContent(
+    Ion::Storage::Record* record, const Layout& l,
+    const SymbolContext& symbolContext, CodePoint symbol) {
+  UserExpression e = BuildExpressionFromLayout(l, symbol, symbolContext);
+  return setExpressionContent(record, e);
+}
+
+Ion::Storage::Record::ErrorStatus ExpressionModel::setExpressionContent(
+    Ion::Storage::Record* record, const UserExpression& newExpression) {
+  assert(record->fullName() != nullptr);
+  // Prepare the new data to be stored
+  setStorageChangeFlag();
+  Ion::Storage::Record::Data newData = record->value();
+  size_t previousExpressionSize = expressionSize(record);
+  size_t newExpressionSize =
+      newExpression.isUninitialized() ? 0 : newExpression.size();
+  size_t previousDataSize = newData.size;
+  size_t newDataSize =
+      previousDataSize - previousExpressionSize + newExpressionSize;
+  void* expAddress = expressionAddress(record);
+  // Update size of record to maximal size between previous and new data
+  newData.size = std::max(previousDataSize, newDataSize);
+  Ion::Storage::Record::ErrorStatus error = record->setValue(newData);
+  if (error != Ion::Storage::Record::ErrorStatus::None) {
+    assert(error ==
+               Ion::Storage::Record::ErrorStatus::NotEnoughSpaceAvailable ||
+           error == Ion::Storage::Record::ErrorStatus::CanceledByDelegate);
+    return error;
+  }
+  // Prepare the new data content
+  /* WARNING: expressionAddress() cannot be used while the metadata is invalid
+   * (as it is sometimes computed from metadata). Thus, the expression address
+   * is given as a parameter to updateNewDataWithExpression. */
+  updateNewDataWithExpression(record, newExpression, expAddress,
+                              newExpressionSize, previousExpressionSize);
+  // Set the data with the right size
+  newData.size = newDataSize;
+  error = record->setValue(newData);
+  // Any error would have occurred at the first call to setValue
+  assert(error == Ion::Storage::Record::ErrorStatus::None);
+
+  /* Here we delete only the elements relative to the expression model kept in
+   * this handle. */
+  tidyDownstreamPoolFrom();
+  return error;
+}
+
+void ExpressionModel::updateNewDataWithExpression(
+    Ion::Storage::Record* record, const UserExpression& expressionToStore,
+    void* expressionAddress, size_t expressionToStoreSize,
+    size_t previousExpressionSize) {
+  if (!expressionToStore.isUninitialized()) {
+    memmove(expressionAddress, expressionToStore.addressInPool(),
+            expressionToStoreSize);
+  }
+}
+
+void ExpressionModel::tidyDownstreamPoolFrom(
+    const PoolObject* treePoolCursor) const {
+  if (treePoolCursor == nullptr ||
+      m_expression.isDownstreamOf(treePoolCursor)) {
+    m_expression = SystemExpression();
+    m_circular = -1;
+    m_expressionComplexFormat = MemoizedComplexFormat::NotMemoized;
+  }
+  if (treePoolCursor == nullptr || m_layout.isDownstreamOf(treePoolCursor)) {
+    m_layout = Layout();
+  }
+}
+
+Poincare::UserExpression ExpressionModel::BuildExpressionFromLayout(
+    const Poincare::Layout& l, CodePoint symbol,
+    const Poincare::SymbolContext& symbolContext) {
+  if (l.isUninitialized() || l.isEmpty()) {
+    return UserExpression();
+  }
+  // Compute the expression to store, without replacing symbols
+  UserExpression expressionToStore = UserExpression::Parse(l, symbolContext);
+  return ReplaceSymbolWithUnknown(expressionToStore, symbol);
+}
+
+Poincare::UserExpression ExpressionModel::ReplaceSymbolWithUnknown(
+    const Poincare::UserExpression& e, CodePoint symbol, bool onlySecondTerm) {
+  if (e.isUninitialized() || symbol == 0) {
+    return e;
+  }
+  return e.cloneAndReplaceSymbolWithUnknown(
+      SymbolHelper::BuildUserVariable(symbol), onlySecondTerm);
+}
+
+}  // namespace Shared

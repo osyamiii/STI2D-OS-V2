@@ -1,0 +1,647 @@
+#include "advanced_operation.h"
+
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/pattern_matching.h>
+
+#include "integer.h"
+#include "k_tree.h"
+#include "properties.h"
+#include "random.h"
+#include "rational.h"
+#include "sign.h"
+#include "systematic_reduction.h"
+#include "variables.h"
+
+namespace Poincare::Internal {
+
+bool AdvancedOperation::CanSkipTree(const Tree* e) {
+  /* NOTE: If a more fine-grain skipping is required: e.g. skipping [e] node
+   * but not its descendants, this method could become [NumberOfNodesToSkip]. */
+
+  // Both node without children and depList cannot be reduced, so we skip them
+  if (e->numberOfChildren() == 0 || e->isDepList()) {
+    return true;
+  }
+#if 0
+  PatternMatching::Context ctx;
+  /* Skipping ln(10)^-1 as it's most often related to a projection of log,
+   * exploring branches like (ln(2)+ln(5))^-1 is almost certainly useless */
+  if (PatternMatching::Match(e, KPow(KLn(10_e), -1_e), &ctx)) {
+    return true;
+  }
+#endif
+  return false;
+}
+
+// This is redundant with im and re expansion for finite expressions
+bool AdvancedOperation::ContractImRe(Tree* e) {
+  // re(A)+im(A)*i = A
+  return PatternMatching::MatchReplaceReduce(
+      e, KAdd(KRe(KA), KMult(KIm(KA), i_e)), KA);
+}
+
+bool ExpandImReIfNotInfinite(Tree* e) {
+  // This advanced operation has been disabled for a faster Poincare
+#if POINCARE_EXTENDED_ADVANCED_OPERATIONS
+  PatternMatching::Context ctx;
+  // A? + B?*im(C)*D? + E? = A - B*C*D*i + B*re(C)*D*i + E
+  if (PatternMatching::Match(e, KAdd(KA_s, KMult(KB_s, KIm(KC), KD_s), KE_s),
+                             &ctx)) {
+    const Tree* kc = ctx.getTree(KC);
+    const Sign realSign = GetComplexProperties(kc).realSign();
+    /* - Pattern is only true if re(C) is finite
+     * - At least one member of the addition must be non-empty to prevent
+     * infinitely expanding */
+    if (realSign.isFinite() &&
+        (ctx.getNumberOfTrees(KA) != 0 || ctx.getNumberOfTrees(KE) != 0)) {
+      e->moveTreeOverTree(PatternMatching::CreateReduce(
+          KAdd(KA_s, KMult(-1_e, KB_s, KC, KD_s, i_e),
+               KMult(KB_s, KRe(KC), KD_s, i_e), KE_s),
+          ctx));
+      return true;
+    }
+  }
+  // A? + B?*re(C)*D? + E? = A + B*C*D - B*im(C)*D*i + E
+  if (PatternMatching::Match(e, KAdd(KA_s, KMult(KB_s, KRe(KC), KD_s), KE_s),
+                             &ctx)) {
+    const Tree* kc = ctx.getTree(KC);
+    const Sign imagSign = GetComplexProperties(kc).imagSign();
+    /* - Pattern is only true if im(C) is finite
+     * - At least one member of the addition must be non-empty to prevent
+     * infinitely expanding */
+    if (imagSign.isFinite() &&
+        (ctx.getNumberOfTrees(KA) != 0 || ctx.getNumberOfTrees(KE) != 0)) {
+      e->moveTreeOverTree(PatternMatching::CreateReduce(
+          KAdd(KA_s, KMult(KB_s, KC, KD_s),
+               KMult(-1_e, KB_s, KIm(KC), KD_s, i_e), KE_s),
+          ctx));
+      return true;
+    }
+  }
+#endif
+  return false;
+}
+
+bool AdvancedOperation::ExpandImRe(Tree* e) {
+  return
+      // im(A+B?) = im(A) + im(B)
+      PatternMatching::MatchReplaceReduce(e, KIm(KAdd(KA, KB_p)),
+                                          KAdd(KIm(KA), KIm(KAdd(KB_p)))) ||
+      // re(A+B?) = re(A) + re(B)
+      PatternMatching::MatchReplaceReduce(e, KRe(KAdd(KA, KB_p)),
+                                          KAdd(KRe(KA), KRe(KAdd(KB_p)))) ||
+      // im(A*B?) = im(A)re(B) + re(A)im(B)
+      PatternMatching::MatchReplaceReduce(
+          e, KIm(KMult(KA, KB_p)),
+          KAdd(KMult(KIm(KA), KRe(KMult(KB_p))),
+               KMult(KRe(KA), KIm(KMult(KB_p))))) ||
+      // re(A*B?) = re(A)*re(B) - im(A)*im(B)
+      PatternMatching::MatchReplaceReduce(
+          e, KRe(KMult(KA, KB_p)),
+          KAdd(KMult(KRe(KA), KRe(KMult(KB_p))),
+               KMult(-1_e, KIm(KA), KIm(KMult(KB_p))))) ||
+      ExpandImReIfNotInfinite(e);
+}
+
+bool AdvancedOperation::ContractAbs(Tree* e) {
+  PatternMatching::Context ctx;
+  if (PatternMatching::Match(e, KAbs(KAdd(KExp(KA), KExp(KB))), &ctx)) {
+    if (GetComplexProperties(ctx.getTree(KA)).isPureIm() &&
+        GetComplexProperties(ctx.getTree(KB)).isPureIm()) {
+      // |exp(A) + exp(B)| = √(2+2*cos((B-A)*i)) for A and B pure imaginary
+      e->moveTreeOverTree(PatternMatching::CreateReduce(
+          KExp(KMult(
+              1_e / 2_e,
+              KLn(KAdd(2_e,
+                       KMult(2_e, KTrig(KMult(KAdd(KB, KMult(-1_e, KA)), i_e),
+                                        0_e)))))),
+          ctx));
+      return true;
+    }
+  }
+  // A?*|B|*|C|*D? = A*|BC|*D
+  return PatternMatching::MatchReplaceReduce(
+      e, KMult(KA_s, KAbs(KB), KAbs(KC), KD_s),
+      KMult(KA_s, KAbs(KMult(KB, KC)), KD_s));
+}
+
+bool AdvancedOperation::ExpandAbs(Tree* e) {
+  if (PatternMatching::MatchReplaceReduce(
+          e, KPow(KAbs(KA), 2_e),
+          KAdd(KPow(KRe(KA), 2_e), KPow(KIm(KA), 2_e)))) {
+    // |A|^2 = re(A)^2+im(A)^2
+    return true;
+  }
+  if (!e->isAbs()) {
+    return false;
+  }
+  PatternMatching::Context ctx;
+  if (e->child(0)->isMult()) {
+    // |A*B*C*...| = |A|*|B|*|C|*.. expand abs of mult deeply
+    const Tree* mult = e->child(0);
+    Tree* result = mult->cloneNode();
+    for (const Tree* child : mult->children()) {
+      PatternMatching::CreateReduce(KAbs(KA), {.KA = child});
+    }
+    SystematicReduction::ShallowReduce(result);
+    e->moveTreeOverTree(result);
+    return true;
+  }
+  if ((PatternMatching::Match(e, KAbs(KExp(KMult(KA, KLn(KB)))), &ctx) ||
+       PatternMatching::Match(e, KAbs(KPow(KB, KA)), &ctx)) &&
+      GetComplexProperties(ctx.getTree(KA)).isReal()) {
+    // |B^A| = |B|^A for A real
+    e->moveTreeOverTree(
+        e->child(0)->isExp()
+            ? PatternMatching::CreateReduce(KExp(KMult(KA, KLn(KAbs(KB)))), ctx)
+            : PatternMatching::CreateReduce(KPow(KAbs(KB), KA), ctx));
+    return true;
+  }
+  if (PatternMatching::Match(e, KAbs(KA), &ctx) &&
+      GetComplexProperties(ctx.getTree(KA)).isReal()) {
+    // |A| = A*sign(A) for A real
+    e->moveTreeOverTree(
+        PatternMatching::CreateReduce(KMult(KA, KSign(KA)), ctx));
+    return true;
+  }
+  // |A| = √(re(A)^2+im(A)^2)
+  return PatternMatching::MatchReplaceReduce(
+      e, KAbs(KA),
+      KExp(
+          KMult(1_e / 2_e, KLn(KAdd(KPow(KRe(KA), 2_e), KPow(KIm(KA), 2_e))))));
+}
+
+bool AdvancedOperation::ExpandExp(Tree* e) {
+#if POINCARE_COMPLEX
+  PatternMatching::Context ctx;
+  if (PatternMatching::Match(e, KExp(KMult(KA, KLn(KB))), &ctx) &&
+      ctx.getTree(KA)->isHalf()) {
+    ComplexProperties properties = GetComplexProperties(ctx.getTree(KB));
+    if (!properties.imagSign().isNull() &&
+        properties.imagSign().hasKnownStrictSign()) {
+      /* e = √(a+bi) with b not null and of known sign
+       *
+       * Re(e):           √(1/2 * (√(a^2+b^2)+a))
+       * Im(e): sign(b) * √(1/2 * (√(a^2+b^2)-a))
+       * and abs(KB) = abs(a+bi) = √(a^2+b^2) */
+      TreeRef re = PatternMatching::CreateReduce(KRe(KB), ctx);
+      Tree* abs = PatternMatching::CreateReduce(KAbs(KB), ctx);
+      Tree* res = PatternMatching::CreateReduce(
+          KAdd(KExp(KMult(KH, KLn(KMult(KH, KAdd(KA, KB))))),
+               KMult(KExp(KMult(KH, KLn(KMult(KH, KAdd(KMult(-1_e, KA), KB))))),
+                     KC)),
+          {.KA = re,
+           .KB = abs,
+           .KC = properties.imagSign().isStrictlyPositive() ? i_e
+                                                            : KMult(-1_e, i_e),
+           .KH = 1_e / 2_e});
+      e->moveTreeOverTree(res);
+      SharedTreeStack->flushFromBlock(re);
+      return true;
+    }
+  }
+#endif
+  return
+#if POINCARE_COMPLEX
+      // exp(A?+B?i+C?) = exp(A+C)*(cos(B) + sin(B)*i)
+      /* This is a more generic form of the previous exp(ai) => cos(b)+sin(b)i.
+       * It shortcuts what could be done in 2/3 Advanced operation before:
+       * exp(a+bi) => exp(a)exp(bi) => exp(a)(cos(b)+sin(b)i) */
+      PatternMatching::MatchReplaceReduce(
+          e, KExp(KAdd(KA_s, KMult(KB_s, i_e), KC_s)),
+          KMult(KExp(KAdd(KA_s, KC_s)),
+                KAdd(KTrig(KMult(KB_s), 0_e),
+                     KMult(KTrig(KMult(KB_s), 1_e), i_e)))) ||
+#endif
+      // exp(A+B?) = exp(A) * exp(B)
+      PatternMatching::MatchReplaceReduce(e, KExp(KAdd(KA, KB_p)),
+                                          KMult(KExp(KA), KExp(KAdd(KB_p))));
+}
+
+bool AdvancedOperation::ContractExp(Tree* e) {
+  // A? * exp(B * Ln(C)) * D? * exp(B * Ln(E)) * F? =>
+  // A * exp(B * Ln(C * E)) * D * F with C and E positive reals
+  // This steps shortcuts 3 contract steps
+  PatternMatching::Context ctx;
+  if (PatternMatching::Match(e,
+                             KMult(KA_s, KExp(KMult(KB_p, KLn(KC))), KD_s,
+                                   KExp(KMult(KB_p, KLn(KE))), KF_s),
+                             &ctx)) {
+    ComplexProperties propertiesC = GetComplexProperties(ctx.getTree(KC));
+    if (propertiesC.isReal() && propertiesC.realSign().isPositive()) {
+      ComplexProperties propertiesE = GetComplexProperties(ctx.getTree(KE));
+      if (propertiesE.isReal() && propertiesE.realSign().isPositive()) {
+        Tree* contracted = PatternMatching::CreateReduce(
+            KMult(KA_s, KExp(KMult(KB_p, KLn(KMult(KC, KE)))), KD_s, KF_s),
+            ctx);
+        e->moveTreeOverTree(contracted);
+        return true;
+      }
+    }
+  }
+  return
+      // A? * exp(B) * exp(C) * D? = A * exp(B+C) * D
+      PatternMatching::MatchReplaceReduce(e,
+                                          KMult(KA_s, KExp(KB), KExp(KC), KD_s),
+                                          KMult(KA_s, KExp(KAdd(KB, KC)), KD_s))
+#if POINCARE_COMPLEX
+      ||
+      // A? + cos(B) + C? + sin(B)*i + D? = A + C + D + exp(B*i)
+      PatternMatching::MatchReplaceReduce(
+          e, KAdd(KA_s, KTrig(KB, 0_e), KC_s, KMult(KTrig(KB, 1_e), i_e), KD_s),
+          KAdd(KA_s, KC_s, KD_s, KExp(KMult(KB, i_e)))) ||
+      // A? + cos(B) + C? - sin(B)*i + D? = A + C + D + exp(-B*i)
+      PatternMatching::MatchReplaceReduce(
+          e,
+          KAdd(KA_s, KTrig(KB, 0_e), KC_s, KMult(-1_e, KTrig(KB, 1_e), i_e),
+               KD_s),
+          KAdd(KA_s, KC_s, KD_s, KExp(KMult(-1_e, KB, i_e)))) ||
+      // A? * exp(i*B) * C? * i = A * C * exp(i*(B+π/2))
+      PatternMatching::MatchReplaceReduce(
+          e, KMult(KA_s, KExp(KMult(i_e, KB_s)), KC_s, i_e),
+          KMult(KA_s,
+                KExp(KMult(i_e, KAdd(KMult(KB_s), KMult(π_e, 1_e / 2_e)))),
+                KC_s))
+#endif
+          ;
+}
+
+// A*(B+C+..)*(D+E+...) = A*B*D + A*B*E+...+A*C*D+...
+bool AdvancedOperation::ExpandMult(Tree* e) {
+  /* As opposed to most advanced operation steps, we expand mult in depth
+   * because too many advanced reduction steps were needed to reduce
+   * multiplications of additions. We therefore rely on ContractMult for atomic
+   * contractions that improve the metric. */
+  PatternMatching::Context ctx;
+  if (e->isMult() &&
+      PatternMatching::Match(e, KMult(KA_s, KAdd(KB, KC_p), KD_s), &ctx)) {
+    assert(ctx.getNumberOfTrees(KA) != 0 || ctx.getNumberOfTrees(KD) != 0);
+    if (ctx.getNumberOfTrees(KA) > 0) {
+      const Tree* a = ctx.getTree(KA);
+      if (a->isNegativeRational() && !a->isMinusOne() &&
+          Rational::Numerator(a).isMinusOne()) {
+        /* Distribute only the negative sign of a multiplication, if the first
+         * term is a rational of the form -1/q.
+         * KA_s*(KB+KC_p)*KD_s -> (-KA_s)*ExpandMult((-1)*(KB+KC_p)*KD_s) */
+        Tree* result = SharedTreeStack->pushMult(2);
+        Tree* KATrees = PatternMatching::Create(KMult(KA_s), ctx);
+        Rational::SetSign(KATrees->isMult() ? KATrees->child(0) : KATrees,
+                          NonStrictSign::Positive);
+        Tree* toExpand = PatternMatching::CreateReduce(
+            KMult(-1_e, KAdd(KB, KC_p), KD_s), ctx);
+        AdvancedOperation::ExpandMult(toExpand);
+        e->moveTreeOverTree(result);
+        SystematicReduction::ShallowReduce(e);
+        return true;
+      }
+    }
+    int numberOfTerms = 1 + ctx.getNumberOfTrees(KC);
+    Tree* result = SharedTreeStack->pushAdd(numberOfTerms);
+    const Tree* term = ctx.getTree(KB);
+    for (int i = 0; i < numberOfTerms; i++) {
+      ctx.setNode(KB, term, 1, false);
+      // TODO: Maybe limit the number of recursive calls.
+      ExpandMult(PatternMatching::CreateReduce(KMult(KA_s, KB, KD_s), ctx));
+      term = term->nextTree();
+    }
+    e->moveTreeOverTree(result);
+    SystematicReduction::ShallowReduce(e);
+    return true;
+  }
+  return false;
+}
+
+/* Only the first child of a multiplication is considered as a potential factor.
+ * This simplifies multiplication contraction, relies on expression order
+ * (favoring rationals), and could limit some factorization where a common
+ * factor is hidden after a non-common one.  */
+const Tree* GetFactor(const Tree* e) { return e->isMult() ? e->child(0) : e; }
+
+// Push a clone of e stripped from what would GetFactor return
+Tree* PushNonFactors(const Tree* e) {
+  if (!e->isMult()) {
+    return (1_e)->cloneTree();
+  }
+  assert(e->numberOfChildren() > 1);
+  Tree* result = e->cloneTree();
+  NAry::RemoveChildAtIndex(result, 0);
+  NAry::SquashIfUnary(result);
+  return result;
+}
+
+/* PushCommonFactor pushes a common factor found in an addition. The common
+ * factor can be any tree if found in every terms. Otherwise, it looks for a
+ * rational number (different from 1, with numerator -1 or 1) that can factor
+ * the sign or denominator of each terms. For example :
+ * - Common factor:
+ *     (-1+x)^-1×(-1+3×x)+(-1+x)^-1×(-3×x^2+x^3) ->  (-1+x)^-1
+ *     π + π×x^2                                 ->  π
+ *     3/2 + (3/2)×x                             ->  3/2
+ * - Common denominator:
+ *      3/2 - (5/2)×x                            ->  1/2
+ *     -1/3 - (2/3)×x                            -> -1/3
+ *     -3/2 - (3/7)×x                            -> -1
+ * - No Common factor:
+ *     π + 2×π×exp(1/2×Ln(2))
+ *     -3/2 + (3/7)×x
+ */
+Tree* PushCommonFactor(const Tree* e) {
+  assert(e->isAdd());
+  Tree* commonFactor = nullptr;
+  for (const Tree* child : e->children()) {
+    const Tree* childFactor = GetFactor(child);
+    // Escape cases where one of the terms is 1
+    if (childFactor->isOne()) {
+      if (commonFactor) {
+        commonFactor->removeTree();
+      }
+      return nullptr;
+    }
+    if (commonFactor == nullptr) {
+      commonFactor = childFactor->cloneTree();
+      continue;
+    }
+    if (commonFactor->treeIsIdenticalTo(childFactor)) {
+      continue;
+    }
+    if (!commonFactor->isRational() || !childFactor->isRational()) {
+      // Cannot find a common ground between the two factors. Ex: 2/3 and π
+      commonFactor->removeTree();
+      return nullptr;
+    }
+    // Find a common ground between different rational factors
+    bool negativeCommonFactor = commonFactor->isNegativeRational();
+    if (negativeCommonFactor && childFactor->isPositiveRational()) {
+      // CommonFactor must be turned positive.
+      if (commonFactor->isMinusOne()) {
+        // Cannot find a common ground between the two factors. Ex: -1 and 3/2
+        commonFactor->removeTree();
+        return nullptr;
+      }
+      Rational::SetSign(commonFactor, NonStrictSign::Positive);
+      negativeCommonFactor = false;
+      if (commonFactor->treeIsIdenticalTo(childFactor)) {
+        // Ex: With -3/2 and 3/2, return 3/2
+        continue;
+      }
+    } else if (commonFactor->isMinusOne()) {
+      // CommonFactor can stay -1. Ex: With -1 and -2/3, return -1
+      continue;
+    }
+    // Find a common ground between different rational factors of identical sign
+    IntegerHandler commonDenominator = Rational::Denominator(commonFactor);
+    if (!commonDenominator.isOne() &&
+        IntegerHandler::Compare(Rational::Denominator(childFactor),
+                                commonDenominator) == 0) {
+      // Identical denominators: remove numerator and preserve sign
+      // Ex: With -2/7 and -5/7, return -1/7
+      commonFactor->moveTreeOverTree(Rational::Push(
+          IntegerHandler(negativeCommonFactor ? -1 : 1), commonDenominator));
+      continue;
+    }
+    if (negativeCommonFactor) {
+      // Both factors are different, but negative: return -1
+      commonFactor->cloneTreeOverTree(-1_e);
+      continue;
+    }
+    // Cannot find a common ground between the two factors. Ex: 2/3 and 5/7
+    commonFactor->removeTree();
+    return nullptr;
+  }
+  assert(commonFactor && !commonFactor->isOne());
+  return commonFactor;
+}
+
+bool AdvancedOperation::ContractMult(Tree* e) {
+  /* A? * B^C * D^C * E? = A? * (BD)^C * E? with B or D addition as there is a
+   * systematic operation that expands back the Pow if B*D is kept as a Mult
+   * node */
+  // TODO experiment: directly match KPow(KAdd(KB_p), KC) and
+  // KPow(KAdd(KD_p), KC). This will remove cases like x^5 * (x+y)^5
+  // but allow x^5 * y^5 * (x+y)^5 * (x-y)^5 to match
+  // TODO experiment: match on different exponent KC and KF and extract
+  // pow with exponent min(KC, KF) to handle cases like (x+y)^5(x-y)^6
+  PatternMatching::Context ctx;
+  if (PatternMatching::Match(e, KMult(KA_s, KPow(KB, KC), KPow(KD, KC), KE_s),
+                             &ctx) &&
+      (ctx.getTree(KB)->isAdd() || ctx.getTree(KD)->isAdd())) {
+    Tree* mult = PatternMatching::CreateReduce(KMult(KB, KD), ctx);
+    ExpandMult(mult);
+    ctx.setNode(KB, mult, 1, false);
+    mult->moveTreeOverTree(
+        PatternMatching::CreateReduce(KMult(KA_s, KPow(KB, KC), KE_s), ctx));
+    e->moveTreeOverTree(mult);
+    return true;
+  }
+  /* TODO: With  N and M positive, contract
+   * A + B*A*C + A^N + D*A^M*E into A*(1 + B*C + A^(N-1) + D*A^(M-1)*E) */
+  if (!e->isAdd()) {
+    return false;
+  }
+
+  /* Find a common factor in an addition of multiplications.
+   * Handle rational denominators and -1 but look for first term of each
+   * multiplication only. */
+  // A + A*B + A * C + A * D + ... = A * (1 + B + C + D + ...)
+  Tree* commonFactor = PushCommonFactor(e);
+  if (commonFactor) {
+    TreeRef result = SharedTreeStack->pushMult(2);
+    commonFactor->cloneTree();
+    TreeRef resultNonFactor = SharedTreeStack->pushAdd(e->numberOfChildren());
+    for (const Tree* child : e->children()) {
+      const Tree* localFactor = GetFactor(child);
+      if (localFactor->treeIsIdenticalTo(commonFactor)) {
+        PushNonFactors(child);
+        continue;
+      }
+      assert(commonFactor->isRational() && localFactor->isRational());
+      Tree* newChild = SharedTreeStack->pushMult(2);
+      assert(!commonFactor->isZero());
+      // For example, with commonFactor 1/5, and child (-4/5)*π push -4 here
+      Rational::NonZeroDivision(localFactor, commonFactor);
+      // For example, with (-4/5)*π, push π here
+      PushNonFactors(child);
+      SystematicReduction::ShallowReduce(newChild);
+    }
+    commonFactor->removeTree();
+    SystematicReduction::ShallowReduce(resultNonFactor);
+    SystematicReduction::ShallowReduce(result);
+    e->moveTreeOverTree(result);
+    return true;
+  }
+
+  return
+      // A + BC + DE + CE = A-BD + (C+D)*(B+E) mainly useful when A == BD
+      PatternMatching::MatchReplaceReduce(
+          e, KAdd(KA, KMult(KB_s, KC_s), KMult(KD_s, KE_s), KMult(KC_s, KE_s)),
+          KAdd(KA, KMult(-1_e, KB_s, KD_s),
+               KMult(KAdd(KMult(KB_s), KMult(KE_s)),
+                     KAdd(KMult(KD_s), KMult(KC_s))))) ||
+      /* A? + B?*C*D? + E? + C^2 + F? = (BD/2 + C)^2 - (BD)^2/4 + A + E + F
+       * useful to find notable identities, when A + E + F = B^2/4 */
+      PatternMatching::MatchReplaceReduce(
+          e, KAdd(KA_s, KMult(KB_s, KC, KD_s), KE_s, KPow(KC, 2_e), KF_s),
+          KAdd(KPow(KAdd(KC, KMult(1_e / 2_e, KB_s, KD_s)), 2_e), KA_s, KE_s,
+               KF_s, KMult(-1_e / 4_e, KPow(KMult(KB_s, KD_s), 2_e)))) ||
+      // A? + B?*C*D? + E? + F?*C*G? + H? = A + C*(B*D+F*G) + E + H
+      PatternMatching::MatchReplaceReduce(
+          e,
+          KAdd(KA_s, KMult(KB_s, KC, KD_s), KE_s, KMult(KF_s, KC, KG_s), KH_s),
+          KAdd(KA_s, KMult(KC, KAdd(KMult(KB_s, KD_s), KMult(KF_s, KG_s))),
+               KE_s, KH_s));
+}
+
+bool AdvancedOperation::ExpandPower(Tree* e) {
+  if (!e->isPow()) {
+    return false;
+  }
+  // (A?*B)^C = A^C * B^C is currently in SystematicSimplification
+  PatternMatching::Context ctx;
+#if POINCARE_COMPLEX
+  // 1/(A+iB) -> (A-B*i) / (A^2+B^2)
+  if (PatternMatching::Match(e, KPow(KA, -1_e), &ctx)) {
+    ComplexProperties properties = GetComplexProperties(ctx.getTree(KA));
+    // Filter out infinite and pure expressions for useful and accurate results
+    if (!properties.isPure() && !properties.canBeInfinite()) {
+      e->moveTreeOverTree(PatternMatching::CreateReduce(
+          KMult(KAdd(KRe(KA), KMult(-1_e, KIm(KA), i_e)),
+                KPow(KAdd(KPow(KRe(KA), 2_e), KPow(KIm(KA), 2_e)), -1_e)),
+          ctx));
+      return true;
+    }
+  }
+#endif
+
+  // (A + B + ...)^2 = (A^2 + 2*A*B + B^2 + ...): fully develop the square
+  if (PatternMatching::Match(e, KPow(KA, 2_e), &ctx) &&
+      ctx.getTree(KA)->isAdd()) {
+    assert(ctx.getTree(KA)->numberOfChildren() >= 2);  // e should be reduced
+    const Tree* add = ctx.getTree(KA);
+    int nbOfChildren = add->numberOfChildren();
+    constexpr int maxChildrenForDeepExpand = 10;
+    if (nbOfChildren > maxChildrenForDeepExpand) {
+      // Fallback to simple expand if too many children in addition
+      return PatternMatching::MatchReplaceReduce(
+          e, KPow(KAdd(KA, KB_p), 2_e),
+          KAdd(KPow(KA, 2_e), KMult(2_e, KA, KAdd(KB_p)),
+               KPow(KAdd(KB_p), 2_e)));
+    }
+    const Tree* children[maxChildrenForDeepExpand];
+    // Store children as the cache will be cleared by the successive Create
+    for (IndexedChild<const Tree*> child : add->indexedChildren()) {
+      children[child.index] = child;
+    }
+    Tree* res = KAdd.node<0>->cloneTree();
+    for (int i = 0; i < nbOfChildren; ++i) {
+      PatternMatching::CreateReduce(KPow(KA, 2_e), {.KA = children[i]});
+      for (int j = i + 1; j < nbOfChildren; ++j) {
+        PatternMatching::CreateReduce(KMult(2_e, KA, KB),
+                                      {.KA = children[i], .KB = children[j]});
+      }
+    }
+    NAry::SetNumberOfChildren(res, nbOfChildren * (nbOfChildren + 1) / 2);
+    SystematicReduction::ShallowReduce(res);
+    e->moveTreeOverTree(res);
+    return true;
+  }
+
+#if POINCARE_SUM_AND_PRODUCT
+  // Binomial theorem
+  // (A + B?)^n = sum(binomial(n, k) * A^k * B^(n-k), k, 0, n)
+  if (!PatternMatching::Match(e, KPow(KAdd(KA, KB_p), KC), &ctx) ||
+      ctx.getTree(KC)->isMinusOne() || Random::HasRandom(e)) {
+    return false;
+  }
+  const Tree* expTree = ctx.getTree(KC);
+  // Since e has been reduced, expTree is an integer different from 0 or 1
+  assert(expTree->isInteger() &&
+         !expTree->isOfType({Type::MinusOne, Type::Zero, Type::One}));
+  IntegerHandler exp = Integer::Handler(expTree);
+  assert(!exp.isMinusOne());
+  exp.setSign(NonStrictSign::Positive);
+
+  if (IntegerHandler::Compare(exp, IntegerHandler(9)) > 0) {
+    // Do not expand power strictly greater than 9
+    return false;
+  }
+
+  // a^n and b^n are out of the sum to avoid dependencies in a^0 and b^0
+  bool inverse = expTree->isNegativeInteger();
+  /* a, b and n requires 2 trees each:
+   * - one outside any scope (resp.: KA, KB and KC)
+   * - one in KSum scope     (resp.: KD, KE and KF)
+   */
+  TreeRef scopedKA = ctx.getTree(KA)->cloneTree();
+  Variables::EnterScope(scopedKA);
+  ctx.setNode(KD, scopedKA, 1, false, 1);
+  TreeRef scopedKB = PatternMatching::Create(KAdd(KB_p), ctx);
+  Variables::EnterScope(scopedKB);
+  ctx.setNode(KE, scopedKB, 1, false, 1);
+  // No need to clone and enter scope with KC since it contains no variables
+  assert(!Variables::HasVariables(expTree));
+  ctx.setNode(KF, expTree, 1, false, 1);
+  // Use Abs(KC) and Abs(KF) since [inverse] handles negative exponents
+  e->moveTreeOverTree(PatternMatching::CreateReduce(
+      KAdd(KPow(KA, KAbs(KC)),
+           KSum("k"_e, 1_e, KAdd(KAbs(KC), -1_e),
+                KMult(KBinomial(KAbs(KF), KVarK), KPow(KD, KVarK),
+                      KPow(KE, KAdd(KAbs(KF), KMult(-1_e, KVarK))))),
+           KPow(KAdd(KB_p), KAbs(KC))),
+      ctx));
+  // Removing scopedKA, and scopedKB
+  SharedTreeStack->flushFromBlock(scopedKA);
+  Parametric::Explicit(e);
+  if (inverse) {
+    PatternMatching::MatchReplaceReduce(e, KA, KPow(KA, -1_e));
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool AdvancedOperation::ExpandCeilFloor(Tree* e) {
+  return
+      // ceil(A)  -> -floor(-A)
+      PatternMatching::MatchReplaceReduce(e, KCeil(KA),
+                                          KMult(-1_e, KFloor(KMult(-1_e, KA))));
+}
+
+bool AdvancedOperation::ContractCeilFloor(Tree* e) {
+  return
+      // floor(A) -> -ceil(-A)
+      PatternMatching::MatchReplaceReduce(e, KFloor(KA),
+                                          KMult(-1_e, KCeil(KMult(-1_e, KA))));
+}
+
+bool AdvancedOperation::ExpandComplexArgument(Tree* e) {
+  if (!e->isArg()) {
+    return false;
+  }
+  // arg(x + iy) = atan2(y, x)
+  const Tree* child = e->child(0);
+  ComplexProperties childProperties = GetComplexProperties(child);
+  Sign realSign = childProperties.realSign();
+  if (realSign.hasKnownStrictSign()) {
+    Sign imagSign = childProperties.imagSign();
+    // Cases handled in systematic simplification
+    assert(!(realSign.isNull() && imagSign.hasKnownStrictSign()) &&
+           !imagSign.isNull());
+    if (realSign.isStrictlyPositive() || imagSign.isPositive() ||
+        imagSign.isStrictlyNegative()) {
+      /* atan2(y, x) = arctan(y/x)      if x > 0
+       *               arctan(y/x) + π  if y >= 0 and x < 0
+       *               arctan(y/x) - π  if y < 0  and x < 0 */
+      e->moveTreeOverTree(PatternMatching::CreateReduce(
+          KAdd(KATanRad(KMult(KIm(KA), KPow(KRe(KA), -1_e))), KMult(KB, π_e)),
+          {.KA = child,
+           .KB = realSign.isStrictlyPositive()
+                     ? 0_e
+                     : (imagSign.isPositive() ? 1_e : -1_e)}));
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace Poincare::Internal

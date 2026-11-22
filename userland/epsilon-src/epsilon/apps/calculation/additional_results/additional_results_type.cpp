@@ -1,0 +1,263 @@
+#include "additional_results_type.h"
+
+#include <apps/exam_mode_manager.h>
+#include <poincare/additional_results_helper.h>
+#include <poincare/preferences.h>
+#include <poincare/symbol_context.h>
+#include <poincare/user_expression.h>
+
+#include <cmath>
+
+#include "../app.h"
+#include "../calculation.h"
+#include "vector_helper.h"
+
+using namespace Poincare;
+using namespace Shared;
+
+namespace Calculation {
+
+AdditionalResultsType AdditionalResultsType::AdditionalResultsForExpressions(
+    const UserExpression& input, const UserExpression& exactOutput,
+    const UserExpression& approximateOutput,
+    const Preferences::CalculationPreferences calculationPreferences,
+    const Poincare::SymbolContext& symbolContext) {
+  if (ForbidAdditionalResults(input, exactOutput, approximateOutput)) {
+    return AdditionalResultsType{.empty = true};
+  }
+  if (HasComplex(approximateOutput, calculationPreferences, symbolContext)) {
+    return AdditionalResultsType{.complex = true};
+  }
+  if (HasComplex(exactOutput, calculationPreferences, symbolContext)) {
+    // Cf comment in HasComplex
+    return NoAdditionalResult;
+  }
+  bool inputHasAngleUnit, exactHasAngleUnit, approximateHasAngleUnit;
+  bool inputHasUnit = input.hasUnit(true, &inputHasAngleUnit);
+  bool exactHasUnit = exactOutput.hasUnit(true, &exactHasAngleUnit);
+  bool approximateHasUnit =
+      approximateOutput.hasUnit(true, &approximateHasAngleUnit);
+  assert(exactHasUnit == approximateHasUnit);
+  (void)approximateHasUnit;  // Silence compiler
+  if (inputHasUnit || exactHasUnit) {
+    /* We display units additional results based on exact output. If input has
+     * units but not output (ex: L/(L/3)), we don't display any results. */
+    return exactHasUnit && HasUnit(exactOutput, calculationPreferences)
+               ? AdditionalResultsType{.unit = true}
+               : NoAdditionalResult;
+  }
+  if (HasDirectTrigo(input, exactOutput, calculationPreferences,
+                     symbolContext)) {
+    return AdditionalResultsType{.directTrigonometry = true};
+  }
+  if (HasInverseTrigo(input, exactOutput, approximateOutput,
+                      calculationPreferences, symbolContext)) {
+    return AdditionalResultsType{.inverseTrigonometry = true};
+  }
+  if (HasVector(exactOutput, approximateOutput, calculationPreferences,
+                symbolContext)) {
+    return AdditionalResultsType{.vector = true};
+  }
+  if (approximateOutput.dimension().isMatrix()) {
+    return HasMatrix(approximateOutput) ? AdditionalResultsType{.matrix = true}
+                                        : NoAdditionalResult;
+  }
+  if (exactHasAngleUnit || approximateHasAngleUnit) {
+    return exactHasAngleUnit && HasUnit(exactOutput, calculationPreferences)
+               ? AdditionalResultsType{.unit = true}
+               : NoAdditionalResult;
+  }
+  if (exactOutput.isBoolean()) {
+    return NoAdditionalResult;
+  }
+  AdditionalResultsType type = {};
+  if (!inputHasAngleUnit && HasFunction(input, approximateOutput)) {
+    type.function = true;
+  }
+  if (HasScientificNotation(approximateOutput, calculationPreferences,
+                            symbolContext)) {
+    type.scientificNotation = true;
+  }
+  if (HasPositiveInteger(exactOutput)) {
+    type.integer = true;
+  } else if (HasRational(exactOutput,
+                         {.complexFormat = calculationPreferences.complexFormat,
+                          .angleUnit = calculationPreferences.angleUnit,
+                          .context = symbolContext})) {
+    type.rational = true;
+  }
+  if (type.isUninitialized()) {
+    type.empty = true;
+  }
+  assert(!type.isUninitialized());
+  return type;
+}
+
+bool AdditionalResultsType::ForbidAdditionalResults(
+    const UserExpression& input, const UserExpression& exactOutput,
+    const UserExpression& approximateOutput) {
+  /* Special case for Store:
+   * Store nodes have to be at the root of the expression, which prevents
+   * from creating new expressions with store node as a child. We don't
+   * return any additional outputs for them to avoid bothering with special
+   * cases. */
+  if (ExamModeManager::ExamMode().forbidAdditionalResults() ||
+      input.isUninitialized() || exactOutput.isUninitialized() ||
+      approximateOutput.isUninitialized() || input.isStore() ||
+      exactOutput.isList() || approximateOutput.isList() ||
+      approximateOutput.deepSearch([](const UserExpression& e) {
+        return e.isUndefinedOrNonReal() || e.isPlusOrMinusInfinity();
+      })) {
+    return true;
+  }
+  assert(!input.isUndefined() && !exactOutput.isUndefined());
+  return false;
+}
+
+bool AdditionalResultsType::HasComplex(
+    const UserExpression& approximateOutput,
+    const Preferences::CalculationPreferences calculationPreferences,
+    const SymbolContext& symbolContext) {
+  /* We have 2 edge cases:
+   * 1) exact output assessed to scalar complex but not approximate output
+   * ex:
+   *    For input i^(2×e^(7i^(2×e^322))), the exact output approximates to a
+   *    complex with very small norm but PrintFloat::ConvertFloatToTextPrivate
+   *    rounds it to 0 so the approximation output is 0i. Thus, the imaginary
+   *    part of the approximate output is zero so it is not considered as scalar
+   *    complex, while the exact output is.
+   * 2) approximate output assessed to scalar complex but not exact output
+   * ex:
+   *    In polar format, for input -10 the exact output is 10e^(iπ) and the
+   *    approximate output is 10e^(3.14i). Due to rounding errors, the imaginary
+   *    part of the approximate output is not zero so it is considered as scalar
+   *    complex, while the exact output is not.
+   * We chosed to handle the 2nd case and not to display any additional results
+   * in the 1st case. */
+  return approximateOutput.isComplexScalar(calculationPreferences,
+                                           symbolContext);
+}
+
+bool AdditionalResultsType::HasDirectTrigo(
+    const UserExpression& input, const UserExpression& exactOutput,
+    const Preferences::CalculationPreferences calculationPreferences,
+    const SymbolContext& symbolContext) {
+  assert(!exactOutput.hasUnit(true));
+  Expression exactAngle =
+      AdditionalResultsHelper::ExtractExactAngleFromDirectTrigo(
+          input, exactOutput, symbolContext, calculationPreferences);
+  return !exactAngle.isUninitialized();
+}
+
+bool AdditionalResultsType::HasInverseTrigo(
+    const UserExpression& input, const UserExpression& exactOutput,
+    const UserExpression& approximateOutput,
+    const Preferences::CalculationPreferences calculationPreferences,
+    const Poincare::SymbolContext& symbolContext) {
+  // If the result is complex, it is treated as a complex result instead.
+  assert(!HasComplex(exactOutput, calculationPreferences, symbolContext));
+  assert(!exactOutput.hasUnit(true));
+  return AdditionalResultsHelper::HasInverseTrigo(input, exactOutput,
+                                                  approximateOutput);
+}
+
+bool AdditionalResultsType::HasUnit(
+    const UserExpression& exactOutput,
+    const Preferences::CalculationPreferences calculationPreferences) {
+  // HasUnit is only called when exactOutput has Units
+  assert(exactOutput.hasUnit());
+  // Check whether units cancel out between themselves
+  if (!Poincare::Dimension(exactOutput).isUnit()) {
+    return false;
+  }
+  double value = exactOutput.approximateToRealScalar<double>(
+      UserParameters{calculationPreferences.complexFormat,
+                     calculationPreferences.angleUnit},
+      ApproximationPolicy{.optimize = true}, true);
+  /* TODO_PCJ: For now we assume there will always be AdditionalOutputs to
+   * display if approximation is finite. We should simplify the exact output
+   * with each relevant UnitDisplay and return false if all of them produce the
+   * same as exactOutput. */
+  return std::isfinite(value);
+}
+
+bool AdditionalResultsType::HasVector(
+    const UserExpression& exactOutput, const UserExpression& approximateOutput,
+    const Preferences::CalculationPreferences calculationPreferences,
+    const SymbolContext& symbolContext) {
+  Expression norm = VectorHelper::BuildVectorNorm(
+      exactOutput.clone(), symbolContext, calculationPreferences);
+  if (norm.isUninitialized()) {
+    return false;
+  }
+  assert(!norm.isUndefined());
+  int nChildren = approximateOutput.numberOfChildren();
+  for (int i = 0; i < nChildren; ++i) {
+    if (HasComplex(approximateOutput.cloneChildAtIndex(i),
+                   calculationPreferences, symbolContext)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AdditionalResultsType::HasMatrix(const UserExpression& approximateOutput) {
+  assert(!approximateOutput.isUninitialized());
+  assert(!approximateOutput.hasUnit(true));
+  return approximateOutput.isMatrix() &&
+         !approximateOutput.deepSearch(&Expression::isUndefined);
+}
+
+bool AdditionalResultsType::HasFunction(
+    const UserExpression& input, const UserExpression& approximateOutput) {
+  // We want a single numerical value and to avoid showing the identity function
+  assert(!input.isUninitialized());
+  assert(!input.hasUnit());
+  assert(!approximateOutput.isUndefined());
+  assert(!approximateOutput.hasUnit());
+  assert(!approximateOutput.isMatrix());
+  assert(!approximateOutput.isBoolean());
+  return !approximateOutput.isNonReal() && !approximateOutput.isPoint() &&
+         AdditionalResultsHelper::expressionIsInterestingFunction(input);
+}
+
+bool AdditionalResultsType::HasScientificNotation(
+    const UserExpression& approximateOutput,
+    const Preferences::CalculationPreferences calculationPreferences,
+    const SymbolContext& symbolContext) {
+  assert(!approximateOutput.isUninitialized());
+  assert(!approximateOutput.hasUnit());
+  if (approximateOutput.isNonReal() ||
+      calculationPreferences.displayMode ==
+          Preferences::PrintFloatMode::Scientific) {
+    return false;
+  }
+  Poincare::Layout historyResult = approximateOutput.createLayout(
+      calculationPreferences.displayMode,
+      calculationPreferences.numberOfSignificantDigits, symbolContext,
+      OMG::Base::Decimal, App::k_useTenPower);
+  return !historyResult.isIdenticalTo(
+      AdditionalResultsHelper::ScientificLayout(
+          approximateOutput, symbolContext, calculationPreferences),
+      true);
+}
+
+bool AdditionalResultsType::HasPositiveInteger(
+    const Poincare::UserExpression& exactOutput) {
+  assert(!exactOutput.hasUnit());
+  return Poincare::AdditionalResultsHelper::HasPositiveInteger(exactOutput);
+}
+
+bool AdditionalResultsType::HasRational(
+    const Poincare::UserExpression& exactOutput,
+    const Poincare::UserParameters& userParameters) {
+  /* Rationals can be beautified into many different forms: div, opposite,
+   * div(int,int*10^int) etc. Rather than checking all these forms, reduce
+   * the expression and check if it is rational and non-integer. */
+  SystemExpression eReduced =
+      exactOutput.cloneAndReduce(SimplificationParameters{
+          .user = userParameters, .reductionPolicy = {.advanced = false}});
+  return !eReduced.isInteger() && eReduced.isRational();
+}
+
+}  // namespace Calculation

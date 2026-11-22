@@ -1,0 +1,27 @@
+#pragma once
+
+#include "calculation_graph_controller.h"
+
+namespace Graph {
+
+class IntersectionGraphController : public CalculationGraphController {
+ public:
+  IntersectionGraphController(Escher::Responder* parentResponder,
+                              GraphView* graphView, BannerView* bannerView,
+                              Shared::InteractiveCurveViewRange* curveViewRange,
+                              Shared::CurveViewCursor* cursor);
+  const char* title() const override;
+
+ protected:
+  Ion::Storage::Record m_intersectedRecord;
+
+ private:
+  void reloadBannerView() override;
+  Poincare::Interest specialInterest() const override {
+    return Poincare::Interest::Intersection;
+  }
+  Poincare::Coordinate2D<double> computeNewPointOfInterest(
+      double start, double max, double y, bool stretch) override;
+};
+
+}  // namespace Graph

@@ -1,0 +1,44 @@
+#include "clearance_viewer_controller.h"
+
+#include <ion/authentication.h>
+#include <kandinsky/basic_color.h>
+
+namespace HardwareCheckup {
+
+void ClearanceViewerController::ContentView::setColor(
+    Escher::ThemeComponent color) {
+  Escher::SolidColorView::setColor(color);
+  m_textView.setBackgroundColor(color);
+}
+
+void ClearanceViewerController::viewWillAppear() {
+  Escher::ThemeComponent color;
+  const char* clearanceLevelText;
+  switch (Ion::Authentication::clearanceLevel()) {
+    case Ion::Authentication::ClearanceLevel::NumWorks:
+      color = Escher::ThemeComponent::BasicGreen;
+      clearanceLevelText = "Clearance Level:\n\nNumWorks";
+      break;
+    case Ion::Authentication::ClearanceLevel::NumWorksAndThirdPartyApps:
+      color = Escher::ThemeComponent::BasicYellow;
+      clearanceLevelText = "Clearance Level:\n\nNumWorks and Third-Party Apps";
+      break;
+    case Ion::Authentication::ClearanceLevel::ThirdParty:
+      color = Escher::ThemeComponent::BasicRed;
+      clearanceLevelText = "Clearance Level:\n\nThird-Party";
+      break;
+    default:
+      OMG_UNREACHABLE;
+  }
+
+  m_view.setColor(color);
+  m_view.textView()->setText(clearanceLevelText);
+}
+
+void ClearanceViewerController::ContentView::layoutSubviews(bool force) {
+  setChildFrame(&m_textView,
+                KDRect(0, 0, Ion::Display::Width, Ion::Display::Height / 2),
+                force);
+}
+
+}  // namespace HardwareCheckup

@@ -1,0 +1,620 @@
+#include "tokenizer.h"
+
+#include <omg/unicode_helper.h>
+#include <omg/utf8_helper.h>
+#include <poincare/src/expression/aliases.h>
+#include <poincare/src/expression/binary.h>
+#include <poincare/src/expression/builtin.h>
+#include <poincare/src/expression/physical_constant.h>
+#include <poincare/src/expression/symbol.h>
+#include <poincare/src/expression/units/representatives.h>
+#include <poincare/src/expression/units/unit.h>
+#include <poincare/src/layout/vertical_offset.h>
+
+#include "helper.h"
+
+namespace Poincare::Internal {
+
+Token::Type TokenizerFailure(const char* reason) {
+  (void)reason;
+  return Token::Type::Undefined;
+}
+
+const CodePoint Tokenizer::nextCodePoint(PopTest popTest, bool* testResult) {
+  LayoutSpanDecoder save = m_decoder;
+  CodePoint c = m_decoder.nextCodePoint();
+  bool shouldPop = popTest(c);
+  if (testResult != nullptr) {
+    *testResult = shouldPop;
+  }
+  if (!shouldPop) {
+    m_decoder = save;
+  }
+  return c;
+}
+
+bool Tokenizer::canPopCodePoint(const CodePoint c) {
+  if (m_decoder.nextLayoutIsCodePoint()) {
+    if (m_decoder.codePoint() == c) {
+      m_decoder.skip(1);
+      return true;
+    }
+  }
+  return false;
+}
+
+size_t Tokenizer::popWhile(PopTest popTest) {
+  size_t start = m_decoder.position();
+  bool didPop = true;
+  while (true) {
+    if (!m_decoder.nextLayoutIsCodePoint()) {
+      break;
+    }
+    nextCodePoint(popTest, &didPop);
+    if (!didPop) {
+      break;
+    }
+  }
+  return m_decoder.position() - start;
+}
+
+static bool IsNonDigitalIdentifierMaterial(const CodePoint c) {
+  return c.isLatinLetter() || c.isCombining() || c == '_' ||
+         c == UCodePointDegreeSign || c == '\'' || c == '"' ||
+         c.isGreekCapitalLetter() ||
+         (c.isGreekSmallLetter() && c != UCodePointGreekSmallLetterPi);
+}
+
+bool Tokenizer::IsIdentifierMaterial(const CodePoint c) {
+  return c.isDecimalDigit() || IsNonDigitalIdentifierMaterial(c);
+}
+
+size_t Tokenizer::popIdentifiersString() {
+  return popWhile(IsIdentifierMaterial);
+}
+
+size_t Tokenizer::popDigits() {
+  return popWhile([](CodePoint c) { return c.isDecimalDigit(); });
+}
+
+size_t Tokenizer::popBinaryDigits() {
+  return popWhile([](CodePoint c) { return c.isBinaryDigit(); });
+}
+
+size_t Tokenizer::popHexadecimalDigits() {
+  return popWhile([](CodePoint c) { return c.isHexadecimalDigit(); });
+}
+
+Token Tokenizer::popNumber() {
+  size_t integralPartText = m_decoder.position();
+  const Layout* integralPartStart = m_decoder.layout();
+  size_t integralPartLength = popDigits();
+  LayoutSpan integralPart = LayoutSpan(integralPartStart, integralPartLength);
+
+  size_t fractionalPartLength = 0;
+
+  // Check for binary or hexadecimal number
+  if (integralPartLength == 1 &&
+      CodePointLayout::IsCodePoint(integralPart.data(), '0')) {
+    // Save string position if no binary/hexadecimal number
+    LayoutSpanDecoder savedPosition = m_decoder;
+    // Look for "0b"
+    bool binary = canPopCodePoint('b');
+    bool hexa = false;
+    if (!binary) {
+      // Look for "0x"
+      hexa = canPopCodePoint('x');
+    }
+    if (binary || hexa) {
+      size_t binaryOrHexaLength =
+          binary ? popBinaryDigits() : popHexadecimalDigits();
+      if (binaryOrHexaLength > 0) {
+        Token result(
+            binary ? Token::Type::BinaryNumber : Token::Type::HexadecimalNumber,
+            integralPartStart, integralPartLength + 1 + binaryOrHexaLength);
+        return result;
+      } else {
+        // Rewind before 'b'/'x' letter
+        m_decoder = savedPosition;
+      }
+    }
+  }
+
+  if (canPopCodePoint('.')) {
+    fractionalPartLength = popDigits();
+  } else {
+    assert(integralPartLength > 0);
+  }
+
+  if (integralPartLength == 0 && fractionalPartLength == 0) {
+    return Token(TokenizerFailure("Number must have at least one digit"));
+  }
+
+  size_t exponentPartText = m_decoder.position();
+  size_t exponentPartLength = 0;
+  if (canPopCodePoint(UCodePointLatinLetterSmallCapitalE)) {
+    canPopCodePoint('-');
+    exponentPartText = m_decoder.position();
+    exponentPartLength = popDigits();
+    if (exponentPartLength == 0) {
+      return Token(TokenizerFailure("Exponent must have at least one digit"));
+    }
+  }
+
+  Token result(Token::Type::Number);
+  result.setRange(integralPartStart,
+                  exponentPartText - integralPartText + exponentPartLength);
+  return result;
+}
+
+Token Tokenizer::popToken() {
+  if (m_storedIdentifiersList.size() > 0) {
+    /* Popping an implicit multiplication between identifiers
+     *  The last identifier of the list is the first of the string */
+    return m_storedIdentifiersList.pop();
+  }
+  // Skip whitespaces
+  while (canPopCodePoint(' ')) {
+  }
+
+  if (!m_decoder.nextLayoutIsCodePoint()) {
+    const Layout* layout = m_decoder.nextLayout();
+    Token::Type type = Token::Type::Layout;
+    if (layout->isVerticalOffsetLayout()) {
+      if (VerticalOffset::IsSuffix(layout)) {
+        type = VerticalOffset::IsSuperscript(layout) ? Token::Type::Superscript
+                                                     : Token::Type::Subscript;
+      } else if (VerticalOffset::IsSuperscript(layout)) {
+        type = Token::Type::PrefixSuperscript;
+      }
+    }
+    // Layout separators should have been stripped.
+    assert(!layout->isSeparatorLayout());
+    return Token(type, layout);
+  }
+
+  /* Save for later use (since m_decoder.position() is altered by
+   * popNumber and popIdentifiersString). */
+  LayoutSpanDecoder start = m_decoder;
+
+  /* If the next code point is the start of a number, we do not want to pop it
+   * because popNumber needs this code point. */
+  bool nextCodePointIsNeitherDotNorDigit = true;
+  const CodePoint c = nextCodePoint(
+      [](CodePoint cp) { return cp != '.' && !cp.isDecimalDigit(); },
+      &nextCodePointIsNeitherDotNorDigit);
+
+  // According to c, recognize the Token::Type.
+  if (!nextCodePointIsNeitherDotNorDigit) {
+    /* An implicit addition between units always starts with a number. So we
+     * check here if there is one. If the parsingMethod is already Implicit
+     * AdditionBetweenUnits, we don't need to check it again. */
+    if (!m_parsingContext->metadata.isImplicitAdditionBetweenUnits) {
+      size_t lengthOfImplicitAdditionBetweenUnits =
+          popImplicitAdditionBetweenUnits();
+      if (lengthOfImplicitAdditionBetweenUnits > 0) {
+        return Token(Token::Type::ImplicitAdditionBetweenUnits, start.layout(),
+                     lengthOfImplicitAdditionBetweenUnits);
+      }
+    }
+    // Pop number
+    return popNumber();
+  }
+
+  if (IsIdentifierMaterial(c)) {
+    if (m_parsingContext->metadata.isImplicitAdditionBetweenUnits) {
+      /* If currently popping an implicit addition, we have already checked that
+       * any identifier is a unit. */
+      Token result(Token::Type::Unit);
+      result.setRange(start.layout(),
+                      1 + popWhile(IsNonDigitalIdentifierMaterial));
+#if ASSERTIONS
+      LayoutSpanDecoder decoder(result.toSpan());
+      assert(Units::Unit::CanParse(&decoder, nullptr, nullptr));
+#endif
+      return result;
+    }
+
+    // Decoder is one CodePoint ahead of the beginning of the identifier string
+    m_decoder = start;
+    assert(m_storedIdentifiersList.size() ==
+           0);  // assert we're done with previous tokenization
+    fillIdentifiersList();
+    assert(m_storedIdentifiersList.size() > 0);
+    // The identifiers list is filled, go back to beginning of popToken
+    return popToken();
+  }
+  if ('(' <= c && c <= '/') {
+    /* Those code points form a contiguous range in the utf-8 code points set,
+     * we can thus search faster with this lookup table. */
+    constexpr Token::Type typeForCodePoint[] = {
+        Token::Type::LeftParenthesis, Token::Type::RightParenthesis,
+        Token::Type::Times,           Token::Type::Plus,
+        Token::Type::Comma,           Token::Type::Minus,
+        Token::Type::Undefined,       Token::Type::Slash};
+    /* The dot code point is the second last of that range, but it is matched
+     * before (with popNumber). */
+    assert(c != '.');
+    return Token(typeForCodePoint[c - '('], start.layout());
+  }
+
+  Type comparisonOperatorType;
+  size_t comparisonOperatorLength = 0;
+  if (Binary::IsComparisonOperatorString(
+          start.toSpan(), &comparisonOperatorType, &comparisonOperatorLength)) {
+    /* Change precedence of equal when assigning a function.
+     * This ensures that "f(x) = x and 1" is parsed as "f(x) = (x and 1)" and
+     * not "(f(x) = x) and 1" */
+    Token result(comparisonOperatorType == Type::Equal &&
+                         m_parsingContext->metadata.isAssignmentDeclaration
+                     ? Token::Type::AssignmentEqual
+                     : Token::Type::ComparisonOperator);
+    result.setRange(start.layout(), comparisonOperatorLength);
+    /* Set decoder after comparison operator in case not all codepoints were
+     * popped. */
+    m_decoder = start;
+    m_decoder.skipTree(comparisonOperatorLength);
+    return result;
+  }
+
+  if (c == 0) {
+    return Token(Token::Type::EndOfStream);
+  }
+
+  // All the remaining cases are single codepoint tokens
+  const Layout* layout = start.layout();
+  switch (c) {
+    case UCodePointMultiplicationSign:
+    case UCodePointMiddleDot:
+      return Token(Token::Type::Times, layout);
+    case '^':
+      return Token(Token::Type::Caret, layout);
+    case '!':
+      return Token(Token::Type::Bang, layout);
+    case UCodePointNorthEastArrow:
+      return Token(Token::Type::NorthEastArrow, layout);
+    case UCodePointSouthEastArrow:
+      return Token(Token::Type::SouthEastArrow, layout);
+    case '%':
+      return Token(Token::Type::Percent, layout);
+    case UCodePointAssertion:
+      return Token(Token::Type::EuclideanDivision, layout);
+    case '[':
+      return Token(Token::Type::LeftBracket, layout);
+    case ']':
+      return Token(Token::Type::RightBracket, layout);
+    case '{':
+      return Token(Token::Type::LeftBrace, layout);
+    case '}':
+      return Token(Token::Type::RightBrace, layout);
+    case UCodePointSquareRoot:
+      return Token(Token::Type::ReservedFunction, layout);
+    case UCodePointRightwardsArrow:
+      return Token(Token::Type::RightwardsArrow, layout);
+    case UCodePointInfinity:
+    case UCodePointGreekSmallLetterPi:
+      return Token(Token::Type::SpecialIdentifier, layout);
+    default:
+      return Token(TokenizerFailure("Unknown token."), layout);
+  }
+}
+
+// ========== Identifiers ==========
+
+void Tokenizer::fillIdentifiersList() {
+  LayoutSpanDecoder save = m_decoder;
+  const Layout* identifiersStringStart = m_decoder.layout();
+  popIdentifiersString();
+  const Tree* currentStringEnd = m_decoder.layoutUnsafe();
+  assert(currentStringEnd > static_cast<const Tree*>(identifiersStringStart));
+  while (currentStringEnd > static_cast<const Tree*>(identifiersStringStart)) {
+    if (m_storedIdentifiersList.isFull()) {
+      /* If there is not enough space in the list, just empty it.
+       * All the tokens that have already been parsed are lost and will be
+       * reparsed later. This is not optimal, but we can't remember an infinite
+       * list of token. */
+      m_storedIdentifiersList.clear();
+    }
+    Token rightMostToken = popLongestRightMostIdentifier(identifiersStringStart,
+                                                         &currentStringEnd);
+    m_storedIdentifiersList.push(rightMostToken);
+  }
+  /* Since the m_storedIdentifiersList has limited size, fillIdentifiersList
+   * will sometimes not parse the whole identifiers string.
+   * If it's the case, rewind decoder to the end of the right-most parsed token
+   * */
+  Token rightMostParsedToken = m_storedIdentifiersList[0];
+  m_decoder = save;
+
+  while (m_decoder.layout() != rightMostParsedToken.firstLayout()) {
+    m_decoder.skip(1);
+  }
+  m_decoder.skipTree(rightMostParsedToken.length());
+}
+
+Token Tokenizer::popLongestRightMostIdentifier(const Layout* stringStart,
+                                               const Tree** stringEnd) {
+  size_t length =
+      static_cast<size_t>(NumberOfNextTreeTo(stringStart, *stringEnd));
+  LayoutSpanDecoder decoder(stringStart, length);
+  Token::Type tokenType = Token::Type::Undefined;
+  /* Find the right-most identifier by trying to parse 'abcd', then 'bcd',
+   * then 'cd' and then 'd' until you find a defined identifier. */
+  assert(stringStart == decoder.layout());
+  size_t tokenLength = 0;
+  while (tokenType == Token::Type::Undefined && !decoder.isEmpty()) {
+    assert(decoder.layoutUnsafe() < *stringEnd);
+    stringStart = decoder.layout();
+    tokenLength =
+        static_cast<size_t>(NumberOfNextTreeTo(stringStart, *stringEnd));
+    tokenType = stringTokenType(stringStart, &tokenLength);
+    decoder.nextCodePoint();
+  }
+  /* FIXME The former condition was faulty, as it worked on strings, not trees.
+   * As a result, the rest of the parser was built around the stored identifiers
+   * being cleared everytime. */
+#if 0
+  if (tokenLength !=
+      static_cast<size_t>(NumberOfNextTreeTo(stringStart, *stringEnd))) {
+    /* The token doesn't go to the end of the string.
+     * This can happen when parsing "Ans5x" for example.
+     * It should be parsed as "Ans*5*x" and not "A*n*s5*x",
+     * so when parsing "Ans5x", we first pop "x" and then "Ans".
+     * To avoid missing the "5", we delete every token right of "Ans" and
+     * we later re-tokenize starting from "5x".
+     * */
+    m_storedIdentifiersList.clear();
+  }
+#else
+  m_storedIdentifiersList.clear();
+#endif
+  *stringEnd = static_cast<const Tree*>(stringStart);
+  return Token(tokenType, stringStart, tokenLength);
+}
+
+static bool stringIsACodePointFollowedByNumbers(LayoutSpan span) {
+  LayoutSpanDecoder decoder(span);
+  CodePoint c = decoder.nextCodePoint();
+  if (!IsNonDigitalIdentifierMaterial(c)) {
+    return false;
+  }
+  if (decoder.codePoint().isCombining()) {
+    decoder.nextCodePoint();
+  }
+  while (!decoder.isEmpty()) {
+    CodePoint c = decoder.nextCodePoint();
+    if (!c.isDecimalDigit()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool isSpecialIdentifierOrReservedFunctionFollowedByNumbers(
+    const Layout* start, size_t* length, Token::Type* returnType) {
+  size_t identifierLength = 0;
+  LayoutSpanDecoder decoder(start, *length);
+  while (identifierLength < *length) {
+    CodePoint c = decoder.nextCodePoint();
+    if (c.isDecimalDigit()) {
+      break;
+    }
+    identifierLength += UTF8Decoder::CharSizeOfCodePoint(c);
+  }
+  if (identifierLength == *length) {
+    return false;
+  }
+  LayoutSpan span(start, identifierLength);
+  if (Builtin::HasReservedFunction(span)) {
+    *returnType = Token::Type::ReservedFunction;
+    *length = identifierLength;
+    return true;
+  }
+  if (Builtin::HasSpecialIdentifier(span)) {
+    *returnType = Token::Type::SpecialIdentifier;
+    *length = identifierLength;
+    return true;
+  }
+  return false;
+}
+
+Token::Type Tokenizer::stringTokenType(const Layout* start,
+                                       size_t* length) const {
+  LayoutSpan span(start, *length);
+  // If there are two \" around an identifier, it is a forced custom identifier
+  const Layout* lastCharOfString = start;
+  for (size_t i = 0; i < *length - 1; i++) {
+    lastCharOfString = static_cast<const Layout*>(lastCharOfString->nextTree());
+  }
+  if (*length > 2 && CodePointLayout::IsCodePoint(start, '"') &&
+      CodePointLayout::IsCodePoint(lastCharOfString, '"') &&
+      CodePointSearch(LayoutSpan(static_cast<const Layout*>(start->nextTree()),
+                                 *length - 2),
+                      '"') == *length - 2) {
+    return Token::Type::CustomIdentifier;
+  }
+  if (PhysicalConstant::IsPhysicalConstant(span)) {
+    return Token::Type::Constant;
+  }
+
+  if (Builtin::HasCustomIdentifier(span)) {
+    return Token::Type::CustomIdentifier;
+  }
+  if (Builtin::HasSpecialIdentifier(span)) {
+    return Token::Type::SpecialIdentifier;
+  }
+  Token::Type logicalOperatorType;
+  if (Parser::ParsingHelper::IsLogicalOperator(span, &logicalOperatorType)) {
+    return logicalOperatorType;
+  }
+  if (CodePointLayout::IsCodePoint(start, '_')) {
+    if (Units::Unit::CanParse(span, nullptr, nullptr)) {
+      return Token::Type::Unit;
+    }
+    return TokenizerFailure("Only constants and units can be prefixed with _");
+  }
+#if POINCARE_LIST && POINCARE_UNIT
+  /* Special case for "min". min() = minimum(), min = minute. We handle this now
+   * so that min is never understood as a CustomIdentifier (3->min is not
+   * allowed, just like 3->cos) */
+  if (CompareLayoutSpanWithNullTerminatedString(span, "min") == 0) {
+    bool followedByParenthesis =
+        !m_decoder.isEmpty() &&
+        (m_decoder.layout()->isParenthesesLayout() ||
+         CodePointLayout::IsCodePoint(m_decoder.layout(), '('));
+    return followedByParenthesis ? Token::Type::ReservedFunction
+                                 : Token::Type::Unit;
+  }
+#endif
+  if (Builtin::HasReservedFunction(span)) {
+    return Token::Type::ReservedFunction;
+  }
+
+  const Units::Representative* unitRepresentative = nullptr;
+  bool canParseUnit = Units::Unit::CanParse(span, &unitRepresentative, nullptr);
+
+  /* - When parsing for unit conversion, the identifier "m" should always
+   * be understood as the unit and not the variable.
+   * - Some unit should always be treated as units, never as variables (e.g.
+   * angle units). */
+  if (canParseUnit && (m_parsingContext->metadata.isUnitConversion ||
+                       Units::Unit::IsNameReserved(unitRepresentative))) {
+    return Token::Type::Unit;
+  }
+
+  bool hasUnitOnlyCodePoint = HasCodePoint(span, UCodePointDegreeSign) ||
+                              HasCodePoint(span, '\'') ||
+                              HasCodePoint(span, '"');
+
+  char string[Symbol::k_maxNameSize];
+  LayoutSpanDecoder decoder(span);
+  decoder.printInBuffer(string, std::size(string));
+  /* If preserveInput or isAssignmentDeclaration, any identifier is
+   * understood as a CustomIdentifier.
+   * If the string contains unit-only chars (like °), they can never be a custom
+   * identifier. */
+  if (!hasUnitOnlyCodePoint &&
+      (m_parsingContext->metadata.isAssignmentDeclaration ||
+       m_parsingContext->params.preserveInput ||
+       (m_parsingContext->context &&
+        m_parsingContext->context->symbolTypeForIdentifier(std::string_view(
+            string, *length)) != SymbolContext::SymbolType::None))) {
+    return Token::Type::CustomIdentifier;
+  }
+
+#if POINCARE_UNIT
+  /* "m" can be parsed as a unit, except in the following cases:
+   * - There is a variable "m" in the context (checked above).
+   * - useStrictUnitLayout is true ('_' prefix is mandatory). */
+  if (canParseUnit && !(m_parsingContext->context &&
+                        m_parsingContext->context->useStrictUnitLayout())) {
+    return Token::Type::Unit;
+  }
+#endif
+
+  /* "Ans5" should not be parsed as "A*n*s5" but "Ans*5"
+   * "cos2" should not be parsed as "c*o*s2" but "cos(2)" */
+  Token::Type type;
+  if (isSpecialIdentifierOrReservedFunctionFollowedByNumbers(span.data(),
+                                                             length, &type)) {
+    // If true, the length has been modified to match the end of the identifier
+    return type;
+  }
+  // "x12" should not be parsed as "x*12" but "x12"
+  if (!hasUnitOnlyCodePoint && stringIsACodePointFollowedByNumbers(span)) {
+    return Token::Type::CustomIdentifier;
+  }
+  return TokenizerFailure("Unrecognized span.");
+}
+
+// ========== Implicit addition between units ==========
+
+size_t Tokenizer::popImplicitAdditionBetweenUnits() {
+  LayoutSpanDecoder start = m_decoder;
+  CodePoint c = m_decoder.nextCodePoint();
+  assert(c.isDecimalDigit() || c == '.');
+  bool isImplicitAddition = false;
+  bool nextLayoutIsCodePoint = true;
+  size_t length = 0;
+  const Units::Representative* storedUnitRepresentative = nullptr;
+  LayoutSpanDecoder save(LayoutSpan{});
+  while (!m_decoder.isEmpty() && c != UCodePointNull) {
+    /* Check if the string is of the form:
+     * decimalNumber-unit-decimalNumber-unit...
+     * Each loop will check for a pair decimalNumber-unit */
+    size_t lengthOfNumber = 0;
+    const Layout* currentStringStart = m_decoder.layout();
+    while (nextLayoutIsCodePoint && !m_decoder.isEmpty() &&
+           (c.isDecimalDigit() || c == '.')) {
+      lengthOfNumber += 1;
+      nextLayoutIsCodePoint = m_decoder.nextLayoutIsCodePoint();
+      if (nextLayoutIsCodePoint && !m_decoder.isEmpty()) {
+        currentStringStart = m_decoder.layout();
+        c = m_decoder.nextCodePoint();
+      }
+    }
+    if (lengthOfNumber == 0) {
+      /* If the first element of the pair is not a decimal number,
+       * it's the end of the potential implicit addition. */
+      break;
+    }
+    length += lengthOfNumber;
+    /* Counts code points, only used to detect whether any unit material
+     * follows. */
+    size_t lengthOfPotentialUnit = 0;
+    while (nextLayoutIsCodePoint && IsNonDigitalIdentifierMaterial(c)) {
+      lengthOfPotentialUnit += 1;
+      nextLayoutIsCodePoint = m_decoder.nextLayoutIsCodePoint();
+      if (nextLayoutIsCodePoint) {
+        save = m_decoder;
+        c = m_decoder.nextCodePoint();
+      }
+    }
+    if (lengthOfPotentialUnit == 0) {
+      // Second element is not a unit: the string is not an implicit addition
+      isImplicitAddition = false;
+      break;
+    }
+    const Units::Representative* unitRepresentative;
+    /* Count trees, not code points: a combined code point layout is one tree
+     * but two code points, so a code point count would overrun the decoder. */
+    /* If nextLayoutIsCodePoint, the last code point was read speculatively and
+     * not yet accepted, so "save" (taken before that read) marks the true end;
+     * otherwise m_decoder is already past the end of the unit string. */
+    const Tree* unitStringEnd =
+        (nextLayoutIsCodePoint ? save : m_decoder).layoutUnsafe();
+    size_t unitTreeLength = static_cast<size_t>(
+        NumberOfNextTreeTo(currentStringStart, unitStringEnd));
+    length += unitTreeLength;
+    LayoutSpanDecoder decoder(currentStringStart, unitTreeLength);
+    if (!Units::Unit::CanParse(&decoder, &unitRepresentative, nullptr)) {
+      // Second element is not a unit : the string is not an implicit addition
+      isImplicitAddition = false;
+      break;
+    }
+    if (storedUnitRepresentative != nullptr) {
+      // Warning: The order of AllowImplicitAddition arguments matter
+      if (Units::Unit::AllowImplicitAddition(unitRepresentative,
+                                             storedUnitRepresentative)) {
+        // There is at least 2 units allowing for implicit addition
+        isImplicitAddition = true;
+      } else {
+        // Implicit addition not allowed between this unit and the previous one
+        isImplicitAddition = false;
+        break;
+      }
+    }
+    storedUnitRepresentative = unitRepresentative;
+  }
+  if (nextLayoutIsCodePoint) {
+    m_decoder = save;
+  }
+  if (isImplicitAddition) {
+    return length;
+  }
+  // Rewind decoder if nothing was found
+  m_decoder = start;
+  return 0;
+}
+
+}  // namespace Poincare::Internal

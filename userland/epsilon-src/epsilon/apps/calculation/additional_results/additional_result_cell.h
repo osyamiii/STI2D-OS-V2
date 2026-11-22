@@ -1,0 +1,36 @@
+#pragma once
+
+#include <apps/i18n.h>
+#include <escher/menu_cell.h>
+#include <escher/message_text_view.h>
+
+#include "scrollable_three_layouts_view.h"
+
+namespace Calculation {
+
+class AdditionalResultCell : public Escher::MenuCell<ScrollableThreeLayoutsView,
+                                                     Escher::MessageTextView> {
+ public:
+  AdditionalResultCell(I18n::Message subLabelMessage = I18n::Message::Default)
+      : Escher::MenuCell<ScrollableThreeLayoutsView,
+                         Escher::MessageTextView>() {}
+
+  void setHighlighted(bool highlight) override {
+    label()->evenOddCell()->setHighlighted(highlight);
+    if (!m_highlightWholeCell) {
+      return;
+    }
+    Escher::MenuCell<ScrollableThreeLayoutsView,
+                     Escher::MessageTextView>::setHighlighted(highlight);
+  }
+
+  void setHighlightWholeCell(bool highlightWholeCell) {
+    m_highlightWholeCell = highlightWholeCell;
+    label()->setHighlightWholeCell(highlightWholeCell);
+  };
+
+ private:
+  bool m_highlightWholeCell = false;
+};
+
+}  // namespace Calculation

@@ -1,0 +1,61 @@
+#pragma once
+
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "kernel_header.h"
+
+namespace Ion {
+namespace Device {
+
+class UserlandHeader {
+ public:
+  constexpr UserlandHeader();
+  static bool ValidAddress(uint32_t address) {
+    UserlandHeader* info = reinterpret_cast<UserlandHeader*>(address);
+    if (info->m_storageAddressRAM == nullptr || info->m_storageSizeRAM == 0 ||
+        info->m_externalAppsFlashStart == nullptr ||
+        info->m_externalAppsFlashEnd == nullptr ||
+        info->m_externalAppsRAMStart == nullptr ||
+        info->m_externalAppsRAMEnd == nullptr ||
+        info->m_deviceNameFlashStart == nullptr ||
+        info->m_deviceNameFlashEnd == nullptr || info->m_header != Magic ||
+        info->m_footer != Magic) {
+      return false;
+    }
+    return true;
+  }
+  static void ExtractExpectedSoftwareVersion(
+      uint32_t address, char buffer[KernelHeader::k_softwareVersionSize]) {
+    assert(ValidAddress(address));
+    UserlandHeader* info = reinterpret_cast<UserlandHeader*>(address);
+    strlcpy(buffer, info->m_expectedSoftwareVersion,
+            KernelHeader::k_softwareVersionSize);
+  }
+  void* externalAppsAddressFlash() const { return m_externalAppsFlashStart; }
+  size_t externalAppsSizeFlash() const {
+    return static_cast<uint8_t*>(m_externalAppsFlashEnd) -
+           static_cast<uint8_t*>(m_externalAppsFlashStart);
+  }
+
+ private:
+  constexpr static uint32_t Magic = 0xDEC0EDFE;
+  uint32_t m_header;
+  const char m_expectedSoftwareVersion[8];
+  void* m_storageAddressRAM;
+  size_t m_storageSizeRAM;
+  /* We store the range addresses of external apps memory because storing the
+   * size is complicated due to C++11 constexpr. */
+  void* m_externalAppsFlashStart;
+  void* m_externalAppsFlashEnd;
+  void* m_externalAppsRAMStart;
+  void* m_externalAppsRAMEnd;
+  void* m_deviceNameFlashStart;
+  void* m_deviceNameFlashEnd;
+  uint32_t m_footer;
+};
+
+}  // namespace Device
+}  // namespace Ion

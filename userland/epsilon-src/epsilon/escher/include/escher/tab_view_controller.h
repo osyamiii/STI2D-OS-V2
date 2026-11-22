@@ -1,0 +1,71 @@
+#pragma once
+
+#include <escher/app.h>
+#include <escher/tab_view.h>
+#include <escher/tab_view_data_source.h>
+#include <escher/view_controller.h>
+
+namespace Escher {
+
+class TabViewController : public ViewController {
+ public:
+  TabViewController(Responder* parentResponder, TabViewDataSource* dataSource,
+                    std::initializer_list<ViewController*> viewControllers);
+  View* view() override;
+  int activeTab() const;
+  void selectTab();
+  void setSelectedTab(int8_t index);
+  virtual void setActiveTab(int8_t index, bool enter = true);
+  void setDisplayTabs(bool display) { m_view.setDisplayTabs(display); }
+  void enterActiveTab() { setActiveTab(activeTab()); }
+  uint8_t numberOfTabs();
+  void setActiveChildren(uint8_t index);
+
+  virtual const char* tabName(uint8_t index);
+  bool handleEvent(Ion::Events::Event event) override;
+  void initView() override;
+  void viewWillAppear() override;
+  void viewDidDisappear() override;
+
+  ViewController* activeViewController();
+  virtual ThemeComponent tabBackgroundColor() const {
+    return ThemeComponent::BannerPurple;
+  }
+
+ protected:
+  class ContentView : public View {
+   public:
+    ContentView();
+
+    void setActiveView(View* view);
+    void setDisplayTabs(bool display);
+    TabView m_tabView;
+
+   protected:
+#if ESCHER_VIEW_LOGGING
+    const char* className() const override;
+#endif
+   private:
+    int numberOfSubviews() const override;
+    View* subviewAtIndex(int index) override;
+    void layoutSubviews(bool force = false) override;
+
+    View* m_activeView;
+    bool m_displayTabs;
+  };
+
+  ContentView m_view;
+
+  virtual ViewController* children(uint8_t index) { return m_children[index]; }
+  virtual void updateUnionActiveTab() {}
+  virtual void addTabs();
+  void handleResponderChainEvent(ResponderChainEvent event) override;
+
+  constexpr static uint8_t k_maxNumberOfChildren = 3;
+  ViewController* m_children[k_maxNumberOfChildren];
+  uint8_t m_numberOfChildren;
+  TabViewDataSource* m_dataSource;
+  bool m_isSelected;
+};
+
+}  // namespace Escher

@@ -1,0 +1,14 @@
+services:
+  sti2d-messages:
+    build:
+      context: ..
+      dockerfile: messaging/server/Dockerfile
+    restart: unless-stopped
+    environment:
+      STI2D_MESSAGES_DB: /data/messages.sqlite3
+      STI2D_INVITE_CODE: ${STI2D_INVITE_CODE:?Set STI2D_INVITE_CODE in .env}
+      STI2D_TOKEN_TTL: 2592000
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8765:8765"

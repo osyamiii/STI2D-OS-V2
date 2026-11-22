@@ -1,0 +1,31 @@
+========================================
+  BACKROOMS '96 - VERSION NUMWORKS (FR)
+  Crédits : discord.gg/sti2d  |  discord : cjnw (yamii)
+  Jeu original : OllieHallGames
+========================================
+
+INSTALLATION
+1. Va sur https://my.numworks.com/apps (avec Chrome ou Edge).
+2. Branche ta NumWorks en USB.
+3. Choisis le fichier "backrooms96.nwa" puis envoie-le.
+4. Sur la calculatrice, lance l'appli "Backrooms 96".
+
+COMMANDES
+  HAUT / BAS (ou 8 / 5)  : avancer / reculer
+  GAUCHE / DROITE         : tourner
+  4 / 6                   : pas de côté
+  SHIFT (ou 1), maintenu  : courir (endurance limitée)
+  ALPHA (ou 0)            : lampe torche
+  OK / EXE                : ramasser une page / ouvrir la porte
+  RETOUR                  : pause
+  MAISON                  : quitter
+
+BUT DU JEU
+Ramasse les 10 pages accrochées aux murs, puis trouve la porte
+de sortie. Le monstre apparaît quand tu prends la première page.
+Attention aux coupures de courant : sers-toi de la lampe torche.
+
+Menu "QUALITÉ" : NORMALE (160x120, fluide) ou HAUTE (320x240).
+Taille de l'appli : ~470 Ko (bien sous la limite de 5 Mo).
+
+Amuse-toi bien dans les Backrooms !

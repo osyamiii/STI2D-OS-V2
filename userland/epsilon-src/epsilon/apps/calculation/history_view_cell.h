@@ -1,0 +1,119 @@
+#pragma once
+
+#include <apps/calculation/additional_results/additional_results_type.h>
+#include <escher/even_odd_cell_with_ellipsis.h>
+#include <escher/scrollable_layout_view.h>
+#include <escher/scrollable_multiple_layouts_view.h>
+#include <omg/troolean.h>
+
+#include "calculation.h"
+
+namespace Calculation {
+
+class HistoryViewCell;
+
+class HistoryViewCellDataSource {
+ public:
+  enum class SubviewType { None = 0, Input = 1, Output = 2, Ellipsis = 3 };
+  HistoryViewCellDataSource() : m_selectedSubviewType(SubviewType::None) {}
+  virtual void setSelectedSubviewType(SubviewType subviewType, bool sameCell,
+                                      int previousSelectedRow = -1) = 0;
+  SubviewType selectedSubviewType() const { return m_selectedSubviewType; }
+
+ protected:
+  SubviewType m_selectedSubviewType;
+};
+
+class HistoryViewCell : public Escher::Bordered,
+                        public Escher::EvenOddCell,
+                        public Escher::Responder {
+ public:
+  constexpr static KDCoordinate k_margin = Escher::Metric::CommonSmallMargin;
+  constexpr static KDCoordinate k_inputOutputViewsVerticalMargin = k_margin;
+  constexpr static KDCoordinate k_inputViewHorizontalMargin =
+      Escher::AbstractScrollableMultipleLayoutsView::k_horizontalMargin;
+  constexpr static KDCoordinate k_maxCellHeight = Ion::Display::Height * 2;
+
+  static void ComputeCalculationHeights(Calculation* calculation);
+  HistoryViewCell(Responder* parentResponder = nullptr);
+  static bool ViewsCanBeSingleLine(KDCoordinate inputViewWidth,
+                                   KDCoordinate outputViewWidth, bool ellipsis);
+  constexpr static Escher::ThemeComponent BorderColor(bool even) {
+    return even ? Escher::ThemeComponent::CalculationBorderEven
+                : Escher::ThemeComponent::CalculationBorderOdd;
+  }
+  void cellDidSelectSubview(HistoryViewCellDataSource::SubviewType type);
+  void setEven(bool even) override;
+  /* HistoryViewCell is filled with the even / odd color. Highlight is applied
+   * to the subviews only */
+  void drawRect(KDContext* ctx, KDRect rect) const override;
+  void setHighlighted(bool highlight) override;
+  void reloadSubviewHighlight();
+  void setDataSource(HistoryViewCellDataSource* dataSource) {
+    m_dataSource = dataSource;
+  }
+  bool displaysSingleLine() const { return m_calculationSingleLine; }
+  Responder* responder() override { return this; }
+  const Poincare::Layout& layout() const override;
+  /* The background color returns an even / odd color, there are no invisible
+   * cells */
+  Escher::ThemeComponent backgroundColor() const override {
+    return baseColor();
+  }
+  /* HistoryViewCell is filled with the even / odd color. Highlight is applied
+   * to the subviews only */
+  void resetMemoization();
+  void setCalculation(Calculation* calculation, bool expanded,
+                      bool canChangeDisplayOutput = false);
+  void setNewCalculation(Calculation* calculation, bool expanded,
+                         bool canChangeDisplayOutput = false);
+  int numberOfSubviews() const override { return 2 + isDisplayingEllipsis(); }
+  View* subviewAtIndex(int index) override;
+  void layoutSubviews(bool force = false) override;
+  bool handleEvent(Ion::Events::Event event) override;
+  Escher::ScrollableTwoLayoutsView* outputView() {
+    return &m_scrollableOutputView;
+  }
+  Escher::ScrollableLayoutView* inputView() { return &m_inputView; }
+  bool hasEllipsis() const { return m_hasEllipsis; }
+  KDCoordinate minimalHeightForOptimalDisplay();
+  void reloadScroll();
+
+ protected:
+  void handleResponderChainEvent(ResponderChainEvent event) override;
+
+ private:
+  constexpr static KDCoordinate k_resultWidth = 80;
+  // Like EvenOddCellWithEllipsis with a special top border.
+  class CellWithEllipsis : public Escher::EvenOddCellWithEllipsis,
+                           public Escher::Bordered {
+   public:
+    using Escher::EvenOddCellWithEllipsis::EvenOddCellWithEllipsis;
+
+   private:
+    void drawRect(KDContext* ctx, KDRect rect) const override;
+  };
+
+  KDSize minimalSizeForOptimalDisplay() const override {
+    // Not used: we use calculation height memoization
+    assert(false);
+    return KDSizeZero;
+  }
+  // This method needs m_calculationDisplayOutput to already be computed
+  bool updateExpanded(bool expanded);
+  void computeSubviewFrames(KDCoordinate frameWidth, KDCoordinate frameHeight,
+                            KDRect* ellipsisFrame, KDRect* inputFrame,
+                            KDRect* outputFrame);
+  bool isDisplayingEllipsis() const { return isHighlighted() && hasEllipsis(); }
+  uint32_t m_calculationCRC32;
+  Calculation::DisplayOutput m_calculationDisplayOutput;
+  bool m_hasEllipsis;
+  Escher::ScrollableLayoutView m_inputView;
+  Escher::ScrollableTwoLayoutsView m_scrollableOutputView;
+  CellWithEllipsis m_ellipsis;
+  HistoryViewCellDataSource* m_dataSource;
+  OMG::Troolean m_calculationExpanded;
+  bool m_calculationSingleLine;
+};
+
+}  // namespace Calculation

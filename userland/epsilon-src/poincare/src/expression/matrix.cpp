@@ -1,0 +1,585 @@
+#include "matrix.h"
+
+#include <float.h>
+#include <limits.h>
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/pattern_matching.h>
+
+#include <cmath>
+
+#include "approximation.h"
+#include "dependency.h"
+#include "infinity.h"
+#include "integer.h"
+#include "k_tree.h"
+#include "number.h"
+#include "systematic_reduction.h"
+#include "undefined.h"
+#include "vector.h"
+
+namespace Poincare::Internal {
+
+// Generate a matrix of given dimension with all coefficient clones of e
+Tree* Generate(MatrixDimension d, const Tree* e) {
+  Tree* result = SharedTreeStack->pushMatrix(d.rows, d.cols);
+  for (int i = 0; i < d.rows * d.cols; i++) {
+    e->cloneTree();
+  }
+  return result;
+}
+
+Tree* Matrix::Zero(MatrixDimension d) { return Generate(d, 0_e); }
+
+Tree* Matrix::Identity(const Tree* n) {
+  if (!n->isInteger() || Integer::Handler(n).numberOfDigits() > 1 ||
+      Integer::Handler(n).strictSign() != StrictSign::Positive) {
+    /* Do not handle:
+     * - non integers (even though expression might approximate to integer)
+     * - long integers
+     * - not strictly positive integers */
+    return KUndefUnhandled->cloneTree();
+  }
+  uint8_t nb = *Integer::Handler(n).digits();
+  return Identity({nb, nb});
+}
+
+Tree* Matrix::Identity(MatrixDimension d) {
+  assert(d.cols == d.rows && d.cols > 0);
+  uint8_t nb = d.cols;
+  Tree* result = SharedTreeStack->pushMatrix(nb, nb);
+  for (int i = 0; i < nb - 1; i++) {
+    (1_e)->cloneTree();
+    // cloning n zeros is indeed a memset(0)
+    for (int j = 0; j < nb; j++) {
+      (0_e)->cloneTree();
+    }
+  }
+  (1_e)->cloneTree();
+  return result;
+}
+
+Tree* Matrix::Trace(const Tree* matrix) {
+  int n = NumberOfRows(matrix);
+  assert(n == NumberOfColumns(matrix));
+  Tree* result = SharedTreeStack->pushAdd(n);
+  const Tree* child = matrix->child(0);
+  for (int i = 0; i < n - 1; i++) {
+    child->cloneTree();
+    for (int j = 0; j < n + 1; j++) {
+      child = child->nextTree();
+    }
+  }
+  child->cloneTree();
+  SystematicReduction::ShallowReduce(result);
+  return result;
+}
+
+Tree* Matrix::Transpose(const Tree* matrix) {
+  uint8_t rows = NumberOfRows(matrix);
+  uint8_t cols = NumberOfColumns(matrix);
+  if (rows == 1 || cols == 1) {
+    // Only dimensions need to be changed
+    Tree* result = matrix->cloneTree();
+    SetNumberOfRows(result, cols);
+    SetNumberOfColumns(result, rows);
+    return result;
+  }
+  Tree* result = SharedTreeStack->pushMatrix(cols, rows);
+  // Memoize the beginning of each row
+  const Tree* rowsM[k_maximumSize];
+  const Tree* child = matrix->child(0);
+  for (int row = 0; row < rows; row++) {
+    rowsM[row] = child;
+    for (int col = 0; col < cols; col++) {
+      child = child->nextTree();
+    }
+  }
+  // Clone the first tree of each rows and update rowsM to next column
+  for (int col = 0; col < cols; col++) {
+    for (int row = 0; row < rows; row++) {
+      rowsM[row]->cloneTree();
+      rowsM[row] = rowsM[row]->nextTree();
+    }
+  }
+  return result;
+}
+
+Tree* Matrix::Addition(const Tree* matrix1, const Tree* matrix2,
+                       Approximation::Private::Approximator* approximator) {
+  // should be an assert after dimensional analysis
+  assert(NumberOfRows(matrix1) == NumberOfRows(matrix2) &&
+         NumberOfColumns(matrix1) == NumberOfColumns(matrix2));
+  const Tree* childM1 = matrix1->child(0);
+  const Tree* childM2 = matrix2->child(0);
+  int n = matrix1->numberOfChildren();
+  Tree* result = matrix1->cloneNode();
+  for (int i = 0; i < n; i++) {
+    Tree* child = KAdd.node<2>->cloneNode();
+    childM1->cloneTree();
+    childM2->cloneTree();
+    if (approximator) {
+      approximator->toComplexTreeInplace(child);
+    } else {
+      SystematicReduction::ShallowReduce(child);
+    }
+    childM1 = childM1->nextTree();
+    childM2 = childM2->nextTree();
+  }
+  return result;
+}
+
+Tree* Matrix::ScalarMultiplication(
+    const Tree* scalar, const Tree* matrix,
+    Approximation::Private::Approximator* approximator) {
+  Tree* result = matrix->cloneNode();
+  for (const Tree* child : matrix->children()) {
+    Tree* mult = SharedTreeStack->pushMult(2);
+    scalar->cloneTree();
+    child->cloneTree();
+    if (approximator) {
+      approximator->toComplexTreeInplace(mult);
+    } else {
+      SystematicReduction::ShallowReduce(mult);
+    }
+  }
+  return result;
+}
+
+Tree* Matrix::Multiplication(
+    const Tree* matrix1, const Tree* matrix2,
+    Approximation::Private::Approximator* approximator) {
+  assert(NumberOfColumns(matrix1) == NumberOfRows(matrix2));
+  uint8_t rows = NumberOfRows(matrix1);
+  uint8_t internal = NumberOfColumns(matrix1);
+  uint8_t cols = NumberOfColumns(matrix2);
+  Tree* result = SharedTreeStack->pushMatrix(rows, cols);
+  /* The complexity of the naive multiplication is n^3 by itself but if we do
+   * not take care, indexing the children with child will add an n^2
+   * factor. To avoid this, we keep track of each row of matrix2. */
+  const Tree* rowsM2[k_maximumSize];
+  {
+    // Initialize row pointers
+    const Tree* childM2 = matrix2->child(0);
+    for (int k = 0; k < internal; k++) {
+      rowsM2[k] = childM2;
+      for (int c = 0; c < cols; c++) {
+        childM2 = childM2->nextTree();
+      }
+    }
+  }
+  const Tree* childM1Row0 = matrix1->child(0);
+  const Tree* childM1RowK;
+  assert(rows > 0 && cols > 0);
+  for (int row = 0; row < rows; row++) {
+    for (int col = 0; col < cols; col++) {
+      Tree* add = SharedTreeStack->pushAdd(internal);
+      childM1RowK = childM1Row0;
+      for (int k = 0; k < internal; k++) {
+        Tree* mult = SharedTreeStack->pushMult(2);
+        assert(childM1RowK == Child(matrix1, row, k));
+        childM1RowK->cloneTree();
+        childM1RowK = childM1RowK->nextTree();
+        assert(rowsM2[k] == Child(matrix2, k, col));
+        rowsM2[k]->cloneTree();
+        rowsM2[k] = rowsM2[k]->nextTree();
+        if (approximator) {
+          approximator->toComplexTreeInplace(mult);
+        } else {
+          SystematicReduction::ShallowReduce(mult);
+        }
+      }
+      if (approximator) {
+        approximator->toComplexTreeInplace(add);
+      } else {
+        SystematicReduction::ShallowReduce(add);
+      }
+    }
+    childM1Row0 = childM1RowK;
+    // Since each row has moved cols times we can shift them to restore them
+    for (int k = internal - 1; k > 0; k--) {
+      rowsM2[k] = rowsM2[k - 1];
+    }
+    rowsM2[0] = matrix2->child(0);
+  }
+  return result;
+}
+
+// Approximate matrix child for pivot selection, abs is enough for this use case
+double ApproximateForPivot(const Tree* child,
+                           Approximation::Private::Approximator* approximator) {
+  if (!approximator) {
+    return std::abs(Approximation::Private::Approximator(
+                        FloatPrecision::Double,
+                        Approximation::SystemExpressionPolicy{},
+                        Approximation::Private::Context{})
+                        .specificApproximateTo<std::complex<double>>(child));
+  }
+  switch (approximator->floatPrecision()) {
+    case FloatPrecision::Single:
+      return std::abs(
+          approximator->specificApproximateTo<std::complex<SmallerFloat>>(
+              child));
+    case FloatPrecision::Double:
+      return std::abs(
+          approximator->specificApproximateTo<std::complex<double>>(child));
+    default:
+      OMG_UNREACHABLE
+  }
+}
+
+bool Matrix::RowCanonize(Tree* matrix, bool reducedForm, Tree** determinant,
+                         Approximation::Private::Approximator* approximator,
+                         bool forceCanonization) {
+  // If determinant is given, it must be nullptr.
+  assert(!determinant || !*determinant);
+  // The matrix children have to be reduced to be able to spot 0
+  assert(approximator || !SystematicReduction::DeepReduce(matrix));
+
+  /* Check that all values are valid.
+   * Note: if forceCanonization is true, children which return
+   * canApproximate=false may be approximated nonetheless and return NaN. This
+   * is used in the solver to canonize matrices containing parameters (which
+   * cannot be approximated). */
+  for (const Tree* child : matrix->children()) {
+    bool canApproximate = Approximation::CanApproximate(child);
+    if (!forceCanonization && !canApproximate) {
+      // Escape if a child cannot be approximated and forceCanonization is false
+      return false;
+    }
+    if (canApproximate &&
+        !std::isfinite(ApproximateForPivot(child, approximator))) {
+      // Escape if a child that can be approximated has no finite approximation
+      return false;
+    }
+
+    // Undef and inf should have approximated to NAN value in previous step.
+    assert(!child->isUndefined() && !Infinity::IsPlusOrMinusInfinity(child));
+  }
+
+  TreeRef det;
+  if (determinant) {
+    det = SharedTreeStack->pushMult(0);
+  }
+
+  int m = NumberOfRows(matrix);
+  int n = NumberOfColumns(matrix);
+  int row = 0;  // row pivot
+  int col = 0;  // column pivot
+
+  while (row < m && col < n) {
+    /* In non-reduced form, the pivot selection method will affect the output.
+     * Here we prioritize the biggest pivot (in value) to get an output that
+     * does not depend on the order of the rows of the matrix.
+     * We could also take lowest non null pivots, or just first non null as we
+     * already do with reduced forms. Output would be different, but correct. */
+    int iPivot_temp = row;
+    int iPivot = row;
+    SmallerFloat bestPivot = 0.0;
+    while (iPivot_temp < m) {
+      /* Find the best pivot in column col. The precision of SmallerFloat (float
+       * where single precision is enabled) is sufficient to pick the pivot. */
+      Tree* pivotChild = Child(matrix, iPivot_temp, col);
+      SmallerFloat pivot = ApproximateForPivot(pivotChild, approximator);
+      assert(forceCanonization || !std::isnan(pivot));
+      if (std::isnan(pivot)) {
+        /* Although children have been checked at the beginning, a potential
+         * pivot can still approximate to NaN if:
+         * - forceCanonization is true and we approximate children we should not
+         * - a linear combination in previous steps produced an invalid value
+         * We cannot canonize if a potential pivot is NaN, abort. */
+        if (determinant) {
+          det->removeTree();
+        }
+        return false;
+      }
+      // Handle very low pivots
+      if (pivot == 0.0f && !(Number::IsNull(pivotChild))) {
+        pivot = FLT_MIN;
+      }
+
+      if (pivot > bestPivot) {
+        // Update best pivot
+        bestPivot = pivot;
+        iPivot = iPivot_temp;
+        if (reducedForm) {
+          /* In reduced form, taking the first non null pivot is enough, and
+           * more efficient. */
+          break;
+        }
+      }
+      iPivot_temp++;
+    }
+    /* TODO: Handle isNull == OMG::Troolean::Unknown : rowCanonize will
+     * output a mathematically wrong result (and divide expressions by a null
+     * expression) if expression is actually null. For examples,
+     * 1-cos(x)^2-sin(x)^2 would be mishandled. */
+    Tree* candidate = Child(matrix, iPivot, col);
+    if (Number::IsNull(candidate) ||
+        (approximator && ApproximateForPivot(candidate, approximator) == 0.0)) {
+      // No non-null coefficient in this column, skip
+      col++;
+      if (determinant) {
+        // Update determinant: det *= 0
+        NAry::AddChild(det, (0_e)->cloneTree());
+      }
+    } else {
+      // Swap rows row and iPivot
+      if (iPivot != row) {
+        for (int j = row; j < n; j++) {
+          Child(matrix, iPivot, j)->swapWithTree(Child(matrix, row, j));
+        }
+        if (determinant) {
+          // Update determinant: det *= -1
+          NAry::AddChild(det, (-1_e)->cloneTree());
+        }
+      }
+      /* Set to 1 M[row][col] by linear combination (divide values in row by
+       * the pivot) */
+      Tree* divisor = Child(matrix, row, col);
+      if (determinant) {
+        // Update determinant: det *= divisor
+        NAry::AddChild(det, divisor->cloneTree());
+      }
+      Tree* valueToUpdate = divisor;
+      for (int j = col + 1; j < n; j++) {
+        valueToUpdate = valueToUpdate->nextTree();
+        if (approximator) {
+          Tree* newValue = PatternMatching::Create(
+              KMult(KA, KPow(KB, -1_e)), {.KA = valueToUpdate, .KB = divisor});
+          approximator->toComplexTreeInplace(newValue);
+          valueToUpdate->moveTreeOverTree(newValue);
+        } else {
+          valueToUpdate->moveTreeOverTree(PatternMatching::CreateReduce(
+              KMult(KA, KPow(KB, -1_e)), {.KA = valueToUpdate, .KB = divisor}));
+          Dependency::DeepRemoveUselessDependencies(valueToUpdate);
+        }
+      }
+      divisor->cloneTreeOverTree(1_e);
+
+      int start = reducedForm ? 0 : row + 1;
+      /* Set to 0 all M[i][col] i != row by linear combination (subtract row
+       * multiplied by M[i][col]).
+       * If a non-reduced form is computed (ref), only rows below the pivot are
+       * reduced (i > row) */
+      for (int i = start; i < m; i++) {
+        if (i == row) {
+          continue;
+        }
+        Tree* factor = Child(matrix, i, col);
+        Tree* valueToUpdate = factor;
+        TreeRef valueToSubtract = Child(matrix, row, col);
+        for (int j = col + 1; j < n; j++) {
+          valueToUpdate = valueToUpdate->nextTree();
+          valueToSubtract = valueToSubtract->nextTree();
+          if (approximator) {
+            Tree* newValue = PatternMatching::Create(
+                KAdd(KA, KMult(-1_e, KB, KC)),
+                {.KA = valueToUpdate, .KB = valueToSubtract, .KC = factor});
+            approximator->toComplexTreeInplace(newValue);
+            valueToUpdate->moveTreeOverTree(newValue);
+          } else {
+            valueToUpdate->moveTreeOverTree(PatternMatching::CreateReduce(
+                KAdd(KA, KMult(-1_e, KB, KC)),
+                {.KA = valueToUpdate, .KB = valueToSubtract, .KC = factor}));
+            Dependency::DeepRemoveUselessDependencies(valueToUpdate);
+          }
+        }
+        factor->cloneTreeOverTree(0_e);
+      }
+      row++;
+      col++;
+    }
+  }
+  if (!approximator) {
+    SystematicReduction::ShallowReduce(matrix);
+  }
+  if (determinant) {
+    if (approximator) {
+      approximator->toComplexTreeInplace(det);
+    } else {
+      SystematicReduction::ShallowReduce(det);
+    }
+    // Warning: always set determinant last as it is not a TreeRef
+    *determinant = det;
+  }
+  return true;
+}
+
+int Matrix::CanonizeAndRank(Tree* matrix, bool forceCanonization) {
+  if (RowCanonize(matrix, true, nullptr, nullptr, forceCanonization)) {
+    return RankOfCanonized(matrix);
+  }
+  return k_failedToCanonizeRank;
+}
+
+int Matrix::RankOfCanonized(const Tree* matrix) {
+  int rank = NumberOfRows(matrix);
+  int i = rank - 1;
+  while (i >= 0) {
+    int j = NumberOfColumns(matrix) - 1;
+    // TODO: Handle OMG::Troolean::Unknown. See RowCanonize comment
+    while (j >= i && Number::IsNull(Child(matrix, i, j))) {
+      j--;
+    }
+    if (j <= i - 1) {
+      rank--;
+    } else {
+      break;
+    }
+    i--;
+  }
+  return rank;
+}
+
+Tree* Matrix::Inverse(const Tree* matrix,
+                      Approximation::Private::Approximator* approximator) {
+  assert(NumberOfRows(matrix) == NumberOfColumns(matrix));
+  uint8_t dim = NumberOfRows(matrix);
+  /* Create the matrix (A|I) with A is the input matrix and I the dim
+   * identity matrix */
+  Tree* matrixAI = SharedTreeStack->pushMatrix(dim, dim * 2);
+  const Tree* childIJ = matrix->child(0);
+  for (int i = 0; i < dim; i++) {
+    for (int j = 0; j < dim; j++) {
+      childIJ->cloneTree();
+      childIJ = childIJ->nextTree();
+    }
+    for (int j = 0; j < dim; j++) {
+      (i == j ? 1_e : 0_e)->cloneTree();
+    }
+  }
+  // Floats from A might need to be bubbled up in I
+  SystematicReduction::ShallowReduce(matrixAI);
+  // Compute the inverse
+  bool canonized = RowCanonize(matrixAI, true, nullptr, approximator);
+  if (!canonized && !approximator) {
+    matrixAI->moveTreeOverTree(Generate({dim, dim}, KUndef));
+    return matrixAI;
+  }
+
+  // Check invertibility
+  if (canonized) {
+    for (int i = 0; i < dim; i++) {
+      if (!Child(matrixAI, i, i)->isOne()) {
+        matrixAI->moveTreeOverTree(Generate({dim, dim}, KUndef));
+        return matrixAI;
+      }
+    }
+  }
+
+  // Remove A from (A|I)
+  Tree* child = matrixAI->child(0);
+  for (int i = 0; i < dim; i++) {
+    for (int j = 0; j < dim; j++) {
+      child->removeTree();
+    }
+    for (int j = 0; j < dim; j++) {
+      child = child->nextTree();
+    }
+  }
+  SetNumberOfColumns(matrixAI, dim);
+  return matrixAI;
+}
+
+Tree* Matrix::Power(const Tree* matrix, int exponent,
+                    Approximation::Private::Approximator* approximator) {
+  assert(NumberOfRows(matrix) == NumberOfColumns(matrix));
+  if (exponent < 0 && exponent != INT_MIN) {
+    // -INT_MIN is not possible
+    assert(-exponent > 0);
+    Tree* result = Power(matrix, -exponent);
+    // TODO is it worth to compute inverse first ?
+    result->moveTreeOverTree(Inverse(result, approximator));
+    return result;
+  }
+  assert(exponent >= 0 || exponent % 2 == 0);
+  if (exponent == 0) {
+    Tree* result = Integer::Push(NumberOfRows(matrix));
+    result->moveTreeOverTree(Identity(result));
+    return result;
+  }
+  if (exponent == 1) {
+    return matrix->cloneTree();
+  }
+  if (exponent == 2) {
+    return Multiplication(matrix, matrix);
+  }
+  // Quick exponentiation
+  Tree* result = Power(matrix, exponent / 2);
+  result->moveTreeOverTree(Multiplication(result, result, approximator));
+  if (exponent % 2 == 1) {
+    result->moveTreeOverTree(Multiplication(matrix, result, approximator));
+  }
+  return result;
+}
+
+bool Matrix::SystematicReduceMatrixOperation(Tree* e) {
+  // Dim is handled in SystematicReduction::Switch
+  assert(e->isAMatrixOrContainsMatricesAsChildren() && !e->isDim());
+  Tree* child = e->child(0);
+  if (!child->isMatrix() && !e->isIdentity()) {
+    return false;
+  }
+  if (e->isRef() || e->isRref()) {
+    const Tree* undefinedChild = Undefined::GetUndefinedChild(e->child(0));
+    if (undefinedChild) {
+      e->moveTreeOverTree(Generate(GetMatrixDimension(child), undefinedChild));
+      return true;
+    }
+    if (RowCanonize(child, e->isRref())) {
+      e->removeNode();
+      return true;
+    }
+    return false;
+  }
+  Tree* result = nullptr;
+  switch (e->type()) {
+    case Type::Cross:
+    case Type::Dot: {
+      Tree* child2 = child->nextTree();
+      if (!e->child(1)->isMatrix()) {
+        return false;
+      }
+      result = (e->isCross() ? Vector::Cross : Vector::Dot)(child, child2);
+      break;
+    }
+    case Type::Det: {
+      const Tree* undefinedChild = Undefined::GetUndefinedChild(e->child(0));
+      if (undefinedChild) {
+        e->cloneTreeOverTree(undefinedChild);
+        return true;
+      }
+      // Note: We used to have explicit formulas for dimensions 1, 2 and 3
+      if (RowCanonize(child, true, &result)) {
+        break;
+      }
+      return false;
+    }
+    case Type::Identity:
+      result = Identity(child);
+      break;
+    case Type::Inverse:
+      result = Inverse(child);
+      if (result->isUndefined()) {
+        result->removeTree();
+        return false;
+      }
+      break;
+    case Type::Norm:
+      result = Vector::Norm(child);
+      break;
+    case Type::Trace:
+      result = Trace(child);
+      break;
+    case Type::Transpose:
+      result = Transpose(child);
+      break;
+    default:  // Remaining types should have been handled beforehand.
+      assert(false);
+      return false;
+  }
+  e->moveTreeOverTree(result);
+  return true;
+}
+
+}  // namespace Poincare::Internal

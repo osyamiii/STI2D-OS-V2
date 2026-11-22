@@ -1,0 +1,31 @@
+#pragma once
+
+#include <kandinsky/size.h>
+#include <limits.h>
+#include <stddef.h>
+
+namespace Poincare::Internal {
+class Tree;
+}
+
+namespace Poincare::LayoutHelpers {
+
+constexpr size_t k_bufferOverflow = UINT_MAX;
+
+void MakeRightMostParenthesisTemporary(Internal::Tree* l);
+
+// KRackL(KAbsL("x"_l)) -> KRackL(KAbsL(""_l))
+void DeleteChildrenRacks(Internal::Tree* rack);
+
+/* Enforce a correct rack/layout structure of a Tree containing sanitized NArys
+ * by putting all Layout's children in racks. */
+void SanitizeRack(Internal::Tree* rack);
+
+bool IsSanitizedRack(const Internal::Tree* rack);
+
+KDSize Point2DSizeGivenChildSize(KDSize childSize);
+
+// Turn 2E3 into 2×10^3.
+bool TurnEToTenPowerLayout(Internal::Tree* layout, bool linear = false);
+
+}  // namespace Poincare::LayoutHelpers

@@ -1,0 +1,110 @@
+#pragma once
+
+#include <poincare/properties.h>
+#include <poincare/src/memory/tree_ref.h>
+#include <poincare/symbol_context.h>
+
+namespace Poincare::Internal {
+
+/* Textual UserVariables in expressions are projected into de Bruijn indices.
+ * When a scope (parametric) is entered, all the indices are shifted by one
+ * which leaves room to represent the new local variable with the index \0. The
+ * user symbol of the local variable is kept as an hint for the beautification.
+ *
+ * For instance:  x + sum(x + 2k, k, 0, n) => \0 + sum(\1 + 2*\0, k, 0, \1)
+ *
+ * Variable are also given complex properties restrained by the context. */
+
+namespace Variables {
+// Used to store a Variable constant tree on the stack.
+class Variable {
+ public:
+  Variable(uint8_t id, ComplexProperties properties);
+  operator const Tree*() const { return Tree::FromBlocks(m_blocks); }
+
+ private:
+  constexpr static size_t k_size = TypeBlock::NumberOfMetaBlocks(Type::Var);
+  Block m_blocks[k_size];
+};
+
+namespace Private {
+// Variables below preserveUnder are considered local and preserved
+void EnterOrLeaveScope(Tree* e, bool enter, int preserveUnder);
+/* Get the user symbols of e and push them in set. Look inside UserFunctions
+ * definition if ctx is given. */
+void GetUserVariables(
+    const Tree* e, Tree* set,
+    const Poincare::SymbolContext& symbolContext = EmptySymbolContext{});
+uint8_t ToId(const Tree* variables, const char* name, uint8_t length);
+const Tree* ToSymbol(const Tree* variables, uint8_t id);
+// if [checkForRandom] is true, also return true if a Random node is found
+bool HasVariableOrMaybeRandom(const Tree* e, int id,
+                              bool checkForRandom = false);
+}  // namespace Private
+
+/* Push a Set with the free user symbols of the expression. Look inside
+ * UserFunctions definition if ctx is given. */
+Tree* GetUserVariables(
+    const Tree* e,
+    const Poincare::SymbolContext& symbolContext = EmptySymbolContext{});
+// Ignore UserVariables in parametric's variable
+bool HasUserVariables(const Tree* e, bool checkForUserFunctions = false);
+
+bool ProjectLocalVariablesToId(Tree* e, uint8_t depth = 0);
+bool BeautifyToName(Tree* e, uint8_t depth = 0);
+uint8_t Id(const Tree* variable);
+ComplexProperties GetComplexProperties(const Tree* variable);
+
+// On projected expressions
+bool HasVariables(const Tree* e);
+
+// On projected expressions
+bool IsVariableWithId(const Tree* e, int id);
+bool HasVariable(const Tree* e, const Tree* variable);
+bool CanEnterOrLeaveScope(const Tree* e);
+
+// Replace occurrences of variable with value and reduce inside e
+bool Replace(Tree* e, const Tree* variable, const Tree* value, bool reduce);
+bool Replace(Tree* e, int id, const Tree* value, bool leave = false,
+             bool reduce = true);
+bool Replace(Tree* e, int id, const TreeRef& value, bool leave = false,
+             bool reduce = true);
+
+// Replace UserVariable with Var<id>
+bool ReplaceUserVariable(Tree* e, const char* variableName, int id,
+                         ComplexProperties properties);
+bool ReplaceUserVariable(Tree* e, const Tree* variable, int id,
+                         ComplexProperties properties);
+
+// Replace UserFunction or UserSequence with replacement
+void ReplaceUserFunctionOrSequenceWithTree(Tree* e, const Tree* replacement);
+
+// Replace any symbol with replacement
+bool ReplaceSymbolWithTree(Tree* e, const Tree* symbol,
+                           const Tree* replacement);
+
+// Increment all variable indexes
+inline void EnterScope(Tree* e) {
+  return Private::EnterOrLeaveScope(e, true, -1);
+}
+// Increment non null variable indexes
+inline void EnterScopeExceptLocalVariable(Tree* e) {
+  return Private::EnterOrLeaveScope(e, true, 0);
+}
+// Decrement variables indexes
+inline void LeaveScope(Tree* e) {
+  return Private::EnterOrLeaveScope(e, false, 0);
+}
+bool LeaveScopeWithReplacement(Tree* e, const Tree* value, bool reduce,
+                               bool addDependencyInValue);
+
+/* Get the scope of [tree] relative to [root].
+ * The scope is the amount of parametric node in [tree]'s ancestors where
+ * [tree] is a descendant of its [FunctionIndex]-th child.
+ * This corresponds to the number of time the index of the variable needs
+ * to be increased if the variable were to be inserted in place of [tree]. */
+uint8_t GetScopeOf(const Tree* tree, const Tree* root);
+
+};  // namespace Variables
+
+}  // namespace Poincare::Internal

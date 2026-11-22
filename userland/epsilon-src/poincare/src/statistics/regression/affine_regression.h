@@ -1,0 +1,29 @@
+#pragma once
+
+#include <poincare/statistics/regression.h>
+
+namespace Poincare::Internal {
+
+/* This is a pure virtual class that factorises all regression models that
+ * compute an affine function (linear model and median-median model) */
+class AffineRegression : public Regression {
+ public:
+  double levelSet(const double* modelCoefficients, double xMin, double xMax,
+                  double y,
+                  const Poincare::SymbolContext& symbolContext) const override;
+
+ protected:
+  virtual int slopeCoefficientIndex() const { return 0; }
+  virtual int yInterceptCoefficientIndex() const { return 1; }
+
+  Poincare::UserExpression privateExpression(
+      const double* modelCoefficients) const override;
+
+ private:
+  double privateEvaluate(const Coefficients& modelCoefficients,
+                         double x) const override;
+
+  Coefficients privateFit(const Series* series) const override = 0;
+};
+
+}  // namespace Poincare::Internal

@@ -1,0 +1,44 @@
+#pragma once
+
+#include <escher/even_odd_buffer_text_cell.h>
+#include <escher/even_odd_cell.h>
+#include <escher/responder.h>
+#include <escher/text_format.h>
+#include <escher/theme/components.h>
+
+namespace Regression {
+
+class EvenOddDoubleBufferTextCell : public Escher::EvenOddCell,
+                                    public Escher::Responder {
+ public:
+  EvenOddDoubleBufferTextCell(
+      Escher::Responder* parentResponder = nullptr,
+      const Escher::TextFormat& format =
+          Escher::EvenOddCell::k_smallCellDefaultFormat);
+  const char* text() const override;
+  const char* firstText() const;
+  const char* secondText() const;
+  void reloadCell() override;
+  void setHighlighted(bool highlight) override;
+  Escher::Responder* responder() override { return this; }
+  void setEven(bool even) override;
+  bool firstTextSelected();
+  void selectFirstText(bool selectFirstText);
+  void setFirstText(const char* textContent);
+  void setSecondText(const char* textContent);
+  void setTextColor(Escher::ThemeComponent textColor);
+  int numberOfSubviews() const override;
+  Escher::View* subviewAtIndex(int index) override;
+  void layoutSubviews(bool force = false) override;
+  bool handleEvent(Ion::Events::Event event) override;
+
+ protected:
+  Escher::ThemeComponent baseColor() const override {
+    return BaseTableColor(m_even);
+  }
+  bool m_firstTextSelected;
+  Escher::FloatEvenOddTableBufferTextCell<> m_firstBufferTextView;
+  Escher::FloatEvenOddTableBufferTextCell<> m_secondBufferTextView;
+};
+
+}  // namespace Regression

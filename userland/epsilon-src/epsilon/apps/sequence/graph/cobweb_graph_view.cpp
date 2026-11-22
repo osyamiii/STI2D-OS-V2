@@ -1,0 +1,209 @@
+#include "cobweb_graph_view.h"
+
+#include <apps/shared/continuous_function.h>
+#include <apps/shared/continuous_function_cache.h>
+#include <apps/shared/poincare_helpers.h>
+#include <escher/theme/color_picker.h>
+#include <kandinsky/color.h>
+#include <kandinsky/measuring_context.h>
+#include <omg/code_point.h>
+#include <poincare/coordinate_2D.h>
+#include <poincare/helpers/symbol_pool.h>
+#include <poincare/k_tree.h>
+#include <poincare/preferences.h>
+#include <poincare/print.h>
+#include <poincare/src/expression/projection.h>
+#include <poincare/user_expression.h>
+
+#include <cmath>
+
+#include "../app.h"
+#include "shared/global_store.h"
+
+using namespace Shared;
+
+namespace Sequence {
+
+void CobwebPlotPolicy::drawPlot(const AbstractPlotView* plotView,
+                                KDContext* ctx, KDRect rect) const {
+  assert(!m_record.isNull());
+  assert(rect.height() < k_maxHeight);
+  if (shouldUpdate()) {
+    /* If previous step is already drawn, we can remove the dot, the gray line
+     * and the label and continue the broken line instead of redrawing. */
+    m_dotCache.restore(ctx);
+    m_verticalLineCache[m_cachedStep].restore(ctx);
+    m_textCache.restore(ctx);
+    if (m_step < m_cachedStep) {
+      for (int step = m_cachedStep - 1; step >= m_step; step--) {
+        assert(0 <= step && step < k_maximumNumberOfSteps);
+        m_horizontalLineCache[step].restore(ctx);
+        m_verticalLineCache[step].restore(ctx);
+      }
+    }
+  }
+  OMG::ExpiringPointer<Shared::Sequence> sequence =
+      GlobalContextAccessor::SequenceStore().modelForRecord(m_record);
+  constexpr size_t bufferSize = k_textMaxLength + 1;
+  char name[bufferSize] = {};
+  size_t nameLength = sequence->name(name, bufferSize);
+  KDColor fadedColor = KDColor::Blend(
+      Escher::ColorPicker::Resolve(sequence->color()),
+      Escher::ColorPicker::Resolve(Escher::ThemeComponent::TransparencyBase),
+      k_curveFadeRatio);
+  const SequenceContext& context =
+      reinterpret_cast<const SequenceContext&>(App::app()->localContext());
+
+  /* Replace initial term by its value, to avoid replacing it by a wrong value
+   * at next step */
+  Poincare::UserExpression initialSymbol =
+      Poincare::SymbolHelper::BuildUserSequence(
+          name, Poincare::UserExpression::Builder(sequence->initialRank()));
+  Poincare::SystemExpression initialExpression =
+      sequence->firstInitialConditionExpressionReduced();
+  // Replace u(n) by n: u(n) becomes the variable
+  Poincare::UserExpression sequenceParameter =
+      Poincare::SymbolHelper::SystemSymbol();
+  if (sequence->recursiveNotation() ==
+      Shared::Sequence::RecursiveNotation::Shifted) {
+    // If shifted, replace u(n-1) by n: u(n-1) becomes the variable
+    sequenceParameter = Poincare::UserExpression::Create(
+        KSub(KA, 1_e), {.KA = sequenceParameter});
+  }
+  Poincare::UserExpression sequenceSymbol =
+      Poincare::SymbolHelper::BuildUserSequence(name, sequenceParameter);
+  Poincare::UserExpression function =
+      sequence->expressionClone()
+          .cloneAndReplaceSymbolWithExpression(initialSymbol, initialExpression)
+          .cloneAndReplaceSymbolWithUnknown(sequenceSymbol);
+
+  Poincare::SystemExpression reducedFunction =
+      function.cloneAndReduce(Poincare::SimplificationParameters{
+          .user = {.complexFormat = SharedGlobalPrefs().complexFormat(),
+                   .angleUnit = SharedGlobalPrefs().angleUnit(),
+                   .context = App::app()->localContext()},
+          .projectionPolicy = {
+              .symbolic =
+                  Poincare::SymbolicComputation::ReplaceDefinedSymbols}});
+  Poincare::PreparedFunction preparedFunction =
+      reducedFunction.getPreparedFunction(Shared::Function::k_unknownName);
+  Curve2DEvaluation<float> evaluateFunction = [](float t, const void* model,
+                                                 const void*) {
+    Poincare::PreparedFunction* e = (Poincare::PreparedFunction*)model;
+    return Poincare::Coordinate2D<float>(
+        t, e->approximateToRealScalarWithValue(t));
+  };
+  if (!shouldUpdate()) {
+    float xMin = plotView->range()->xMin();
+    float xMax = plotView->range()->xMax();
+    CurveDrawing plot(Curve2D(evaluateFunction, &preparedFunction), &context,
+                      xMin, xMax, plotView->pixelWidth(), fadedColor);
+    plot.draw(plotView, ctx, rect);
+    plotView->drawSegment(ctx, rect, {xMin, xMin}, {xMax, xMax}, fadedColor,
+                          true);
+  }
+  bool increasing = shouldUpdate() && m_cachedStep == m_step - 1;
+  int initialStep = increasing ? m_cachedStep : (shouldUpdate() ? m_step : 0);
+  int rank = sequence->initialRank() + initialStep;
+  float x = increasing
+                ? m_x
+                : sequence->evaluateXYAtParameter(static_cast<float>(rank)).y();
+  float y = rank == sequence->initialRank() ? 0 : x;
+  float uOfX =
+      sequence->evaluateXYAtParameter(static_cast<float>(rank + 1)).y();
+  KDMeasuringContext measuringContext(*ctx);
+  for (int i = initialStep; i < m_step; i++) {
+    rank++;
+    measuringContext.reset();
+    plotView->drawDashedStraightSegment(
+        &measuringContext, rect, OMG::Axis::Vertical, x, y, uOfX,
+        Escher::ColorPicker::Resolve(sequence->color()));
+    m_verticalLineCache[i].save(ctx, measuringContext.writtenRect());
+    plotView->drawDashedStraightSegment(
+        ctx, rect, OMG::Axis::Vertical, x, y, uOfX,
+        Escher::ColorPicker::Resolve(sequence->color()));
+    y = uOfX;
+    float uOfuOfX =
+        sequence->evaluateXYAtParameter(static_cast<float>(rank + 1)).y();
+    measuringContext.reset();
+    plotView->drawDashedStraightSegment(
+        &measuringContext, rect, OMG::Axis::Horizontal, y, x, uOfX,
+        Escher::ColorPicker::Resolve(sequence->color()));
+    m_horizontalLineCache[i].save(ctx, measuringContext.writtenRect());
+    plotView->drawDashedStraightSegment(
+        ctx, rect, OMG::Axis::Horizontal, y, x, uOfX,
+        Escher::ColorPicker::Resolve(sequence->color()));
+    x = uOfX;
+    uOfX = uOfuOfX;
+  }
+  // Save step parameters
+  m_cachedStep = m_step;
+  m_x = x;
+  /* We need to save all the buffers first and then do all the drawings
+   * otherwise an element could be saved in the buffer of another one.
+   * When the said buffer is restored the element will appear twice. */
+  measuringContext.reset();
+  if (m_step) {
+    plotView->drawDashedStraightSegment(
+        &measuringContext, rect, OMG::Axis::Vertical, x, y, 0.f,
+        Escher::ColorPicker::Resolve(Escher::ThemeComponent::AxisSecondary));
+    m_verticalLineCache[m_step].save(ctx, measuringContext.writtenRect());
+  }
+  measuringContext.reset();
+  plotView->drawDot(
+      &measuringContext, rect, Dots::Size::Medium, {x, y},
+      Escher::ColorPicker::Resolve(Escher::ThemeComponent::TokenMainColor));
+  m_dotCache.save(ctx, measuringContext.writtenRect());
+  Poincare::Print::CustomPrintf(name + nameLength, bufferSize - nameLength,
+                                "(%i)", rank);
+  measuringContext.reset();
+  plotView->drawLabel(&measuringContext, rect, name, {x, 0.f},
+                      AbstractPlotView::RelativePosition::After,
+                      AbstractPlotView::RelativePosition::Before,
+                      Escher::ThemeComponent::TextGrayDark);
+  m_textCache.save(ctx, measuringContext.writtenRect());
+  // Actual drawings
+  if (m_step) {
+    plotView->drawDashedStraightSegment(
+        ctx, rect, OMG::Axis::Vertical, x, y, 0.f,
+        Escher::ColorPicker::Resolve(Escher::ThemeComponent::AxisSecondary));
+  }
+  plotView->drawDot(
+      ctx, rect, Dots::Size::Medium, {x, y},
+      Escher::ColorPicker::Resolve(Escher::ThemeComponent::TokenMainColor));
+  // Draw label above x-axis
+  plotView->drawLabel(ctx, rect, name, {x, 0.f},
+                      AbstractPlotView::RelativePosition::After,
+                      AbstractPlotView::RelativePosition::Before,
+                      Escher::ThemeComponent::TextGrayDark);
+}
+
+void CobwebAxesPolicy::drawAxesAndGrid(const AbstractPlotView* plotView,
+                                       KDContext* ctx, KDRect rect) const {
+  const CobwebGraphView* cobweb = static_cast<const CobwebGraphView*>(plotView);
+  if (cobweb->shouldUpdate()) {
+    return;
+  }
+  Shared::PlotPolicy::TwoLabeledAxes::drawAxesAndGrid(cobweb, ctx, rect);
+}
+
+CobwebGraphView::CobwebGraphView(InteractiveCurveViewRange* graphRange,
+                                 CurveViewCursor* cursor,
+                                 BannerView* bannerView, CursorView* cursorView)
+    : PlotView(graphRange) {
+  setBannerOverlapsGraph(false);
+  // WithBanner
+  m_banner = bannerView;
+  // WithCursor
+  m_cursor = cursor;
+  m_cursorView = cursorView;
+}
+
+void CobwebGraphView::drawBackground(KDContext* ctx, KDRect rect) const {
+  if (shouldUpdate()) {
+    return;
+  }
+  ctx->fillRect(rect, Escher::ColorPicker::Resolve(backgroundColor()));
+}
+
+}  // namespace Sequence

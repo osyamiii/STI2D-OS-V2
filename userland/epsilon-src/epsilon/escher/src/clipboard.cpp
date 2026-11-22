@@ -1,0 +1,127 @@
+#include <escher/clipboard.h>
+#include <escher/text_field.h>
+#include <ion/clipboard.h>
+#include <omg/utf8_decoder.h>
+#include <poincare/layout.h>
+#include <poincare/src/layout/k_tree.h>
+#include <poincare/src/memory/tree.h>
+#include <poincare/symbol_context.h>
+#include <poincare/user_expression.h>
+
+#include <algorithm>
+
+namespace Escher {
+
+Clipboard* Clipboard::SharedClipboard() {
+  static Clipboard s_clipboard;
+  return &s_clipboard;
+}
+
+void Clipboard::storeText(const char* text, int length) {
+  int maxSize = TextField::MaxBufferSize();
+  if (length == -1 || length + 1 > maxSize) {
+    // Make sure the text isn't truncated in the middle of a code point.
+    length = std::min(maxSize - 1, static_cast<int>(strlen(text)));
+    /* length can't be greater than strlen(storedText) to prevent any out of
+     * array bound access. */
+    assert(  // to trigger fuzzer
+        length == 0 ||
+        UTF8Decoder::IsTheEndOfACodePoint(&text[length - 1], text));
+    while (length > 0 &&
+           !UTF8Decoder::IsTheEndOfACodePoint(&text[length - 1], text)) {
+      length--;
+    }
+  }
+  assert(length >= 0);
+  assert(length == 0 ||
+         UTF8Decoder::IsTheEndOfACodePoint(&text[length - 1], text));
+  strlcpy(m_textBuffer, text, length + 1);
+  Ion::Clipboard::write(m_textBuffer);
+  m_bufferState = TreeOutdated;
+}
+
+void Clipboard::storeLayout(const Poincare::Layout& layout) {
+  assert(!layout.isForbiddenForCopy());
+  int size = layout.tree()->treeSize();
+  if (size < k_bufferSize) {
+    memcpy(m_treeBuffer, layout.tree(), size);
+  }
+  m_bufferState = TextOutdated;
+#if !PLATFORM_DEVICE
+  // Serialize in case we need it outside epsilon
+  updateTextFromTree();
+  Ion::Clipboard::write(m_textBuffer);
+  m_bufferState = Updated;
+#endif
+}
+
+const char* Clipboard::storedText() {
+  const char* systemText = Ion::Clipboard::read();
+  if (systemText) {
+    return systemText;
+  }
+
+  if (m_bufferState == TextOutdated) {
+    updateTextFromTree();
+  }
+  return m_textBuffer;
+}
+
+Poincare::Layout Clipboard::storedLayout() {
+  const char* systemText = Ion::Clipboard::read();
+  if (systemText) {
+    // TODO: Is it needed to use an expression here ? why not layout directly ?
+    Poincare::Layout rawLayout = Poincare::Layout::Parse(systemText);
+    if (rawLayout.isUninitialized()) {
+      return rawLayout;
+    }
+    Poincare::Layout layoutOfExpr =
+        Poincare::UserExpression::Parse(
+            rawLayout, Poincare::EmptySymbolContext{}, {.preserveInput = true})
+            .createLayout(Poincare::Preferences::PrintFloatMode::Decimal,
+                          Poincare::PrintFloat::k_maxNumberOfSignificantDigits);
+    return layoutOfExpr.isUninitialized() ? rawLayout : layoutOfExpr;
+  }
+  if (m_bufferState == TreeOutdated) {
+    updateTreeFromText();
+  }
+  return privateStoredLayout();
+}
+
+void Clipboard::reset() {
+  strlcpy(m_textBuffer, "", 1);
+  storeEmptyTree();
+  m_bufferState = Updated;
+  /* As we do not want to empty the user's computer's clipboard when entering
+   * exam mode, we do not reset Ion::Clipboard. */
+}
+void Clipboard::storeEmptyTree() {
+  const Poincare::Internal::Tree* emptyRack = Poincare::Internal::KRackL();
+  memcpy(m_treeBuffer, emptyRack, emptyRack->treeSize());
+}
+
+void Clipboard::updateTreeFromText() {
+  Poincare::Layout layout = Poincare::Layout::Parse(m_textBuffer);
+  if (layout.isUninitialized()) {
+    storeEmptyTree();
+  } else {
+    int size = layout.tree()->treeSize();
+    if (size < k_bufferSize) {
+      memcpy(m_treeBuffer, layout.tree(), size);
+    }
+  }
+  m_bufferState = Updated;
+}
+
+void Clipboard::updateTextFromTree() {
+  privateStoredLayout().serialize(m_textBuffer);
+  m_bufferState = Updated;
+}
+
+Poincare::Layout Clipboard::privateStoredLayout() const {
+  // TODO: Assert that SharedTreeStack is initialized
+  return Poincare::Layout::Builder(
+      reinterpret_cast<const Poincare::Internal::Tree*>(m_treeBuffer));
+}
+
+}  // namespace Escher

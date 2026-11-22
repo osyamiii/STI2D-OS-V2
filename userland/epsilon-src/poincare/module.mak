@@ -1,0 +1,358 @@
+_sources_poincare_minimal := $(addprefix src/, \
+  init.cpp:-nopool \
+  init_no_pool.cpp:+nopool \
+  trigonometry.cpp \
+  preferences.cpp \
+  print_float.cpp \
+  sign.cpp \
+  properties.cpp \
+)
+
+_sources_poincare_extended := $(addprefix src/, \
+$(addprefix equation_solver/, \
+  equation_solver_pool.cpp:-nopool \
+  equation_solver.cpp \
+) \
+$(addprefix expression/, \
+  advanced_operation.cpp \
+  advanced_reduction.cpp \
+  algebraic.cpp \
+  aliases.cpp \
+  arithmetic.cpp \
+  approximation.cpp \
+  approximation_derivative.cpp \
+  approximation_helpers.cpp \
+  approximation_integral.cpp \
+  approximation_matrix.cpp \
+  approximation_prepare.cpp \
+  approximation_power.cpp \
+  approximation_logarithm.cpp \
+  approximation_trigonometry.cpp \
+  beautification.cpp \
+  binary.cpp \
+  bounds.cpp \
+  builtin.cpp \
+  cas_disabled.cpp:-cas \
+  cas_enabled.cpp:+cas \
+  continuity.cpp \
+  decimal.cpp \
+  degree.cpp \
+  dependency.cpp \
+  derivation.cpp \
+  dimension.cpp \
+  dimension_checks.cpp \
+  division.cpp \
+  equal_sign.cpp \
+  float_helper.cpp \
+  infinity.cpp \
+  integer.cpp \
+  integer_serialization.cpp \
+  integration.cpp \
+  list.cpp \
+  logarithm.cpp \
+  matrix.cpp \
+  metric.cpp \
+  number.cpp \
+  order.cpp \
+  parametric.cpp \
+  physical_constant.cpp \
+  polynomial.cpp \
+  power_like.cpp \
+  projection.cpp \
+  random.cpp \
+  rational.cpp \
+  sequence.cpp \
+  set.cpp \
+  simplification.cpp \
+  symbol.cpp \
+  systematic_addition.cpp \
+  systematic_operation.cpp \
+  systematic_multiplication.cpp \
+  systematic_reduction.cpp \
+  trigonometry.cpp \
+  trigonometry_exact_formulas.cpp \
+  undefined.cpp \
+  units/best_unit_selection.cpp \
+  units/helpers.cpp \
+  units/prefix.cpp \
+  units/representative.cpp \
+  units/temperature.cpp \
+  units/unit.cpp \
+  units/unit_display.cpp \
+  units/unit_display_only_angles.cpp \
+  units/representatives.cpp \
+  variables.cpp \
+  vector.cpp \
+) \
+$(addprefix function_properties/, \
+  conic.cpp:-nopool \
+  function_type.cpp:-nopool \
+  helper.cpp:-nopool \
+  integral.cpp:-nopool \
+) \
+$(addprefix helpers/, \
+  cas.cpp:-nopool \
+  decimal.cpp \
+  expression_equal_sign.cpp:-nopool \
+  layout.cpp \
+  polynomial_pool.cpp:-nopool \
+  scatter_plot_iterable.cpp:-nopool \
+  sequence.cpp:-nopool \
+  store.cpp:-nopool \
+  symbol.cpp: \
+  symbol_pool.cpp:-nopool \
+  trigonometry.cpp:-nopool \
+) \
+$(addprefix layout/, \
+  autocompleted_pair.cpp \
+  code_point_layout.cpp \
+  cursor_motion.cpp \
+  empty_rectangle.cpp \
+  grid.cpp \
+  input_beautification.cpp \
+  layout_cursor.cpp \
+  layout_selection.cpp \
+  layout_serializer.cpp \
+  layout_span.cpp \
+  layout_span_decoder.cpp \
+  layout_memoization.cpp:-nopool \
+  layouter.cpp \
+  multiplication_symbol.cpp \
+  parser.cpp \
+  parsing/helper.cpp \
+  parsing/latex_parser.cpp \
+  parsing/layout_parser.cpp \
+  parsing/rack_parser.cpp \
+  parsing/tokenizer.cpp \
+  rack_from_text.cpp \
+  rack_layout.cpp \
+  rack_layout_decoder.cpp \
+  render.cpp \
+  xnt.cpp \
+) \
+$(addprefix memory/, \
+  block_stack.cpp \
+  tree_stack.cpp \
+  n_ary.cpp \
+  pattern_matching.cpp \
+  tree.cpp \
+  tree_ref.cpp \
+  tree_stack_checkpoint.cpp \
+  value_block.cpp \
+  visualization.cpp \
+) \
+$(addprefix pool/, \
+  $(addsuffix :-nopool, \
+    circuit_breaker_checkpoint.cpp \
+    exception_checkpoint.cpp \
+    expression.cpp \
+    expression_or_float.cpp \
+    layout.cpp \
+    pool.cpp \
+    pool_checkpoint.cpp \
+    pool_handle.cpp \
+    pool_layout_cursor.cpp \
+    pool_object.cpp \
+    prepared_function.cpp \
+    system_expression.cpp \
+    analysis_expression.cpp \
+    user_expression.cpp \
+  ) \
+) \
+$(addprefix numeric_solver/, \
+  erf_inv.cpp \
+  expression_solver.cpp \
+  hone_functions.cpp \
+  intersection_solver.cpp:-nopool \
+  matrix_array.cpp \
+  regularized_gamma_function.cpp \
+  regularized_incomplete_beta_function.cpp \
+  roots.cpp \
+  roots_pool.cpp:-nopool \
+  solver.cpp \
+  solver_algorithms.cpp \
+  zoom.cpp \
+) \
+$(addprefix point_of_interest/, \
+  point_of_interest_list.cpp:-nopool \
+) \
+$(addprefix statistics/, \
+  $(addprefix distributions/, \
+    distribution_cumulative_function.cpp \
+    distribution_cumulative_inverse.cpp \
+    distribution_evaluate.cpp \
+    distribution_method.cpp \
+    distribution_parameters.cpp \
+    distribution.cpp \
+  ) \
+  $(addprefix inference/, \
+    chi2_test.cpp:-nopool \
+    confidence_interval.cpp:-nopool \
+    ftest.cpp:-nopool \
+    inference.cpp:-nopool \
+    significance_test.cpp:-nopool \
+  ) \
+  $(addprefix regression/, \
+    $(addsuffix :-nopool, \
+    affine_regression.cpp \
+    cubic_regression.cpp \
+    exponential_regression.cpp \
+    linear_regression.cpp \
+    logarithmic_regression.cpp \
+    logistic_regression.cpp \
+    median_regression.cpp \
+    power_regression.cpp \
+    proportional_regression.cpp \
+    quadratic_regression.cpp \
+    quartic_regression.cpp \
+    regression.cpp \
+    regression_switch.cpp \
+    transformed_regression.cpp \
+    trigonometric_regression.cpp \
+  )) \
+  data_table.cpp \
+  domain.cpp \
+  statistics_dataset.cpp \
+  statistics_dataset_column.cpp \
+) \
+  additional_results_helper.cpp:-nopool \
+  exam_mode.cpp \
+  comparison_operator.cpp \
+  float_list.cpp:-nopool \
+  print.cpp \
+  random.cpp \
+  range.cpp \
+  symbol_context.cpp \
+)
+
+_sources_poincare_test_cases := $(addprefix test/, \
+  additional_results_helper.cpp \
+  allowed_dimensions.cpp \
+  beautification.cpp \
+  bounds.cpp \
+  conics.cpp \
+  dimension.cpp \
+  distribution.cpp \
+  equal_sign_helper.cpp \
+  equation_solver.cpp \
+  exam_mode.cpp \
+  expression_properties.cpp \
+  input_beautification.cpp \
+  integer.cpp \
+  k_tree.cpp \
+  latex_parser.cpp \
+  layout_cursor.cpp \
+  layout.cpp \
+  match.cpp \
+  matrix.cpp \
+  memory_elements.cpp \
+  n_ary.cpp \
+  numeric_solver.cpp \
+  order.cpp \
+  parse.cpp \
+  polynomial.cpp \
+  print.cpp \
+  projection.cpp \
+  random.cpp \
+  range.cpp \
+  rational.cpp \
+  regularized_function.cpp \
+  roots.cpp \
+  singularity_solver.cpp \
+  serialization.cpp \
+  set.cpp \
+  sign_and_properties.cpp \
+  statistics.cpp \
+  tree_stack.cpp \
+  trigonometry_exact_formulas.cpp \
+  zoom.cpp \
+  $(addprefix approximation/, \
+    approximation.cpp \
+    arithmetic.cpp \
+    basic_operations.cpp \
+    complex.cpp \
+    lists.cpp \
+    matrix.cpp \
+    numbers.cpp \
+    parametrics.cpp \
+    probability.cpp \
+    trigonometry.cpp \
+    units.cpp \
+  ) \
+  $(addprefix helpers/, \
+    quiz.cpp:+test \
+  ) \
+  $(addprefix pool/, \
+    helpers.cpp \
+    pool_handle.cpp \
+  ) \
+  $(addprefix simplification/, \
+    arithmetic.cpp \
+    basic_operations.cpp \
+    booleans.cpp \
+    complex.cpp \
+    dependencies.cpp \
+    lists.cpp \
+    matrix.cpp \
+    numbers.cpp \
+    parametrics.cpp \
+    power.cpp \
+    probability.cpp \
+    simplification.cpp \
+    trigonometry.cpp \
+    units.cpp \
+  ) \
+)
+
+_sources_poincare_test_util := $(addprefix test/, \
+  helper.cpp \
+  $(addprefix helpers/, \
+    float.cpp \
+    symbol_store.cpp \
+  ) \
+  approximation/helper.cpp \
+  simplification/helper.cpp \
+)
+
+$(call create_module,poincare,1, \
+  $(_sources_poincare_minimal) \
+  $(addsuffix :-minimal,$(_sources_poincare_extended)) \
+  $(addsuffix :+testcases,$(_sources_poincare_test_cases)) \
+  $(addsuffix :+testutil,$(_sources_poincare_test_util)) \
+)
+
+$(call assert_defined,KANDINSKY_fonts_dependencies)
+$(call all_objects_for,$(SOURCES_poincare)): $(KANDINSKY_fonts_dependencies)
+
+POINCARE_TREE_STACK_VISUALIZATION ?= 0
+ifneq ($(POINCARE_TREE_STACK_VISUALIZATION),0)
+POINCARE_TREE_LOG := 1
+SFLAGS_poincare += -DPOINCARE_TREE_STACK_VISUALIZATION=1
+endif
+
+POINCARE_METRICS ?= 0
+ifneq ($(POINCARE_METRICS),0)
+SFLAGS_poincare += -DPOINCARE_METRICS=1
+endif
+
+POINCARE_TREE_LOG ?= 0
+ifeq ($(PLATFORM_TYPE),simulator)
+ifeq ($(DEBUG),1)
+POINCARE_TREE_LOG := 1
+endif
+endif
+
+ifneq ($(POINCARE_TREE_LOG),0)
+SFLAGS_poincare += -DPOINCARE_TREE_LOG=1
+endif
+
+CXXFLAGS += -include $(PATH_poincare)/config.$(POINCARE_variant).h
+
+# Deactivate clang and gcc warnings for out of range cases in switches.
+# This is useful when switching on a Poincare::Internal::TypeBlock, as
+# some cases are purposely out of range.
+ifeq ($(COMPILER_FAMILY),clang)
+PRIVATE_SFLAGS_poincare += -Wno-tautological-constant-out-of-range-compare
+else
+PRIVATE_SFLAGS_poincare += -Wno-switch-outside-range
+endif

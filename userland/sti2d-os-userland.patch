@@ -1,0 +1,125 @@
+diff --git a/epsilon/Makefile b/epsilon/Makefile
+index 1d61e14f13..61077355ff 100644
+--- a/epsilon/Makefile
++++ b/epsilon/Makefile
+@@ -2,7 +2,7 @@
+ 
+ PATH_haussmann := ../haussmann
+ APP_NAME := Epsilon
+-APP_VERSION := 26.1.0
++APP_VERSION ?= 26.4.0
+ OUTPUT_ROOT := output
+ DEBUG ?= 0
+ PLATFORM ?= host
+diff --git a/epsilon/apps/apps_container.cpp b/epsilon/apps/apps_container.cpp
+index c2fe7f4016..88878e2125 100644
+--- a/epsilon/apps/apps_container.cpp
++++ b/epsilon/apps/apps_container.cpp
+@@ -146,6 +146,13 @@ void AppsContainer::didSuspend() {
+   m_backlightDimmingTimer.reset();
+   m_window.updateBatteryAnimation();
+   window()->redraw(true);
++  /* STI2D-OS: with a PIN, waking up shows the lock screen, whatever app was
++   * open (the onboarding and the hardware test excepted). */
++  if (sti2dDidSuspend() && activeApp() &&
++      activeApp()->snapshot() != onBoardingAppSnapshot() &&
++      activeApp()->snapshot() != hardwareTestAppSnapshot()) {
++    switchToBuiltinApp(homeAppSnapshot());
++  }
+ }
+ 
+ bool AppsContainer::dispatchEvent(Ion::Events::Event event) {
+@@ -231,7 +238,16 @@ bool AppsContainer::processEvent(Ion::Events::Event event) {
+   return false;
+ }
+ 
++namespace Sti2d {
++bool ShouldRunShell();
++}
++
+ void AppsContainer::switchToBuiltinApp(App::Snapshot* snapshot) {
++  /* STI2D-OS: the home screen is the STI2D-OS shell (apps/sti2d/host.cpp),
++   * which comes back with the app to open, or with Epsilon's grid. */
++  if (snapshot == homeAppSnapshot() && Sti2d::ShouldRunShell()) {
++    snapshot = runSti2dShell();
++  }
+   if (activeApp() && snapshot != activeApp()->snapshot()) {
+     resetShiftAlphaStatus();
+   }
+@@ -313,6 +329,19 @@ void AppsContainer::run() {
+   Ion::Events::setSpinner(true);
+   Ion::Display::setScreenshotCallback(ShowCursor);
+ 
++  /* STI2D-OS: this userland is started by the official one (the other slot)
++   * through DFU. The kernel may still hold the checkpoints the official
++   * userland set, and setCheckpoint ignores a checkpoint that is already set:
++   * Home (or waking up) would then jump back into the official userland. Drop
++   * them so that this userland's own Home checkpoint is the one the kernel
++   * uses. (Same fix as the PSP-OS userland.) */
++  Ion::CircuitBreaker::unsetCheckpoint(
++      Ion::CircuitBreaker::CheckpointType::AnyKey);
++  Ion::CircuitBreaker::unsetCheckpoint(
++      Ion::CircuitBreaker::CheckpointType::Back);
++  Ion::CircuitBreaker::unsetCheckpoint(
++      Ion::CircuitBreaker::CheckpointType::Home);
++
+   /* Setup the home checkpoint so that the exception checkpoint will be
+    * reactivated on a home interrupt. This way, the main exception checkpoint
+    * will keep the home checkpoint as parent. */
+diff --git a/epsilon/apps/apps_container.h b/epsilon/apps/apps_container.h
+index f42aec6639..fa82f1c764 100644
+--- a/epsilon/apps/apps_container.h
++++ b/epsilon/apps/apps_container.h
+@@ -43,6 +43,10 @@ class AppsContainer : public Escher::Container, Ion::Storage::StorageDelegate {
+   bool dispatchEvent(Ion::Events::Event event) override;
+   void switchToBuiltinApp(Escher::App::Snapshot* snapshot) override;
+   void switchToExternalApp(Ion::ExternalApps::App app);
++  /* STI2D-OS: the shell that replaces the home grid (apps/sti2d/host.cpp).
++   * Returns the snapshot to open once the user chose something. */
++  Escher::App::Snapshot* runSti2dShell();
++  bool sti2dDidSuspend();  // true when the PIN lock screen must show
+   void run() override;
+   bool updateBatteryState();
+   void refreshPreferences();
+diff --git a/epsilon/apps/home/controller.cpp b/epsilon/apps/home/controller.cpp
+index 3b79f585f4..6dc686e01b 100644
+--- a/epsilon/apps/home/controller.cpp
++++ b/epsilon/apps/home/controller.cpp
+@@ -15,6 +15,10 @@ extern "C" {
+ using namespace Escher;
+ using namespace Poincare;
+ 
++namespace Sti2d {
++bool Available();
++}
++
+ namespace Home {
+ 
+ Controller::ContentView::ContentView(
+@@ -68,6 +72,13 @@ bool Controller::handleEvent(Ion::Events::Event event) {
+     return true;
+   }
+   if (event == Ion::Events::Home || event == Ion::Events::Back) {
++    /* STI2D-OS: this grid was opened from the STI2D-OS shell; Home and Back
++     * go back to it (AppsContainer::switchToBuiltinApp runs the shell). */
++    if (Sti2d::Available()) {
++      AppsContainer::sharedAppsContainer()->switchToBuiltinApp(
++          AppsContainer::sharedAppsContainer()->homeAppSnapshot());
++      return true;
++    }
+     m_view.selectableTableView()->selectCellAtLocation(0, 0);
+     return true;
+   }
+diff --git a/epsilon/apps/module.mak b/epsilon/apps/module.mak
+index 64ed16b6ea..9e60c2a020 100644
+--- a/epsilon/apps/module.mak
++++ b/epsilon/apps/module.mak
+@@ -34,7 +34,7 @@ $(call depends_on_themed_image,apps,$(PATH_apps)/title_bar_view.cpp,$(PATH_apps)
+ # Include the specific apps
+ # FIXME Use flavors instead of EPSILON_APPS?
+ EPSILON_APPS ?= calculation graph code statistics distributions inference solver sequence regression elements finance settings
+-_SPECIAL_APPS = home on_boarding usb hardware_test
++_SPECIAL_APPS = home on_boarding usb hardware_test sti2d
+ 
+ ifeq ($(DEBUG),1)
+ HARDWARE_CHECKUP ?= 1

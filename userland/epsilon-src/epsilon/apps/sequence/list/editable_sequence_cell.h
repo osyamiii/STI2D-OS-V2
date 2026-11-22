@@ -1,0 +1,23 @@
+#pragma once
+
+#include <escher/editable_expression_model_cell.h>
+#include <escher/theme/color_picker.h>
+
+#include "sequence_cell.h"
+
+namespace Sequence {
+
+class EditableSequenceCell
+    : public TemplatedSequenceCell<Shared::WithEditableExpressionCell> {
+ public:
+  EditableSequenceCell(Escher::Responder* parentResponder,
+                       Escher::LayoutFieldDelegate* layoutFieldDelegate);
+
+  void layoutSubviews(bool force) override;
+
+ private:
+  constexpr static KDCoordinate k_expressionMargin = 5;
+  bool displayEllipsis() const override { return false; }
+};
+
+}  // namespace Sequence

@@ -1,0 +1,43 @@
+#pragma once
+
+#include <apps/i18n.h>
+#include <escher/chevron_view.h>
+#include <escher/highlight_cell.h>
+#include <escher/menu_cell.h>
+#include <escher/message_text_view.h>
+#include <escher/selectable_list_view_controller.h>
+#include <escher/stack_view_controller.h>
+#include <ion/events.h>
+
+#include "../inference_controller.h"
+#include "inference/models/chi2_test.h"
+
+namespace Inference {
+
+class InputGoodnessController;
+class InputHomogeneityController;
+
+class CategoricalTypeController
+    : public InferenceController,
+      public Escher::UniformSelectableListController<
+          Escher::MenuCell<Escher::MessageTextView, Escher::EmptyCellWidget,
+                           Escher::ChevronView>,
+          2> {
+ public:
+  CategoricalTypeController(Escher::StackViewController* parent,
+                            Chi2Test* inference,
+                            ControllerContainer* controllerContainer);
+  ViewController::TitlesDisplay titlesDisplay() const override {
+    return ViewController::TitlesDisplay::DisplayLastTitle;
+  }
+  const char* title() const override {
+    return I18n::translate(I18n::Message::Chi2Test);
+  }
+  void stackOpenPage(Escher::ViewController* nextPage) override;
+  bool handleEvent(Ion::Events::Event event) override;
+
+  constexpr static int k_indexOfGoodnessCell = 0;
+  constexpr static int k_indexOfHomogeneityCell = 1;
+};
+
+}  // namespace Inference

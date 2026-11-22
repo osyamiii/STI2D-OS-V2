@@ -1,0 +1,498 @@
+#pragma once
+
+/* Although the considered functions are not generally continuous
+ * mathematically speaking, the present class is named ContinuousFunction to
+ * mark the difference with the Sequence class.
+ *
+ * We could not simply name it Function, since such a class already exists:
+ * it is the base class of ContinuousFunction and Sequence.
+ */
+
+#include <apps/i18n.h>
+#include <omg/expiring_pointer.h>
+#include <poincare/function_properties/conic.h>
+#include <poincare/helpers/scatter_plot_iterable.h>
+#include <poincare/point_or_scalar.h>
+#include <poincare/preferences.h>
+#include <poincare/prepared_function.h>
+#include <poincare/symbol_context.h>
+
+#include "continuous_function_cache.h"
+#include "continuous_function_properties.h"
+#include "function.h"
+#include "packed_range_1D.h"
+
+namespace Shared {
+
+class ContinuousFunction : public Function {
+  /* We want the cache to be able to call privateEvaluateXYAtParameter to
+   * bypass cache lookup when memoizing the function's values. */
+  friend class ContinuousFunctionCache;
+
+ public:
+  constexpr static int k_maxDefaultNameSize = sizeof("f99");
+
+  // Create a record with baseName
+  static ContinuousFunction NewModel(Ion::Storage::Record::ErrorStatus* error,
+                                     const char* baseName,
+                                     Escher::ThemeComponent color);
+  static bool IsFunctionAssignment(const Poincare::UserExpression& e);
+
+  // Builder
+  ContinuousFunction(Ion::Storage::Record record = Record());
+
+  ContinuousFunctionProperties properties() const {
+    return m_model.properties(this);
+  }
+  Ion::Storage::Record::ErrorStatus updateNameIfNeeded(
+      bool isNewRecordCreation);
+
+  /* Function */
+
+  CodePoint symbol() const override { return properties().symbol(); }
+
+  // Insert ContinuousFunction's name and argument in buffer ("f(x)" or "y")
+  size_t nameWithArgument(char* buffer, size_t bufferSize,
+                          int derivationOrder = 0) const override;
+  // Title layout for a derivative record: name = d/dx(expr)
+  Poincare::Layout derivativeTitleLayout() const;
+  // Insert the value of the symbol in buffer
+  size_t printAbscissaValue(double cursorT, double cursorX, char* buffer,
+                            size_t bufferSize, int precision) const override;
+  // Insert the value of the evaluation in buffer
+  size_t printFunctionValue(double cursorT, double cursorX, double cursorY,
+                            char* buffer, size_t bufferSize,
+                            int precision) const override;
+  bool isDefined() const override {
+    if (!isDerivative()) {
+      return ExpressionModelHandle::isDefined();
+    }
+    OMG::ExpiringPointer<ContinuousFunction> parent = parentFunction();
+    assert(!parent->isNull());
+    return parent->isDefined();
+  }
+  // Return true if the ContinuousFunction is active
+  bool isActive() const override {
+    return Function::isActive() && properties().isEnabled();
+  };
+  void setActive(bool active) override {
+    Function::setActive(active);
+    if (canDisplayDerivative()) {
+      setActiveDerivatives();
+    }
+  }
+  // If the ContinuousFunction has y for unknown symbol
+  bool isAlongY() const override { return properties().isAlongY(); }
+
+  /* ExpressionModelHandle */
+
+  Ion::Storage::Record::ErrorStatus setContent(
+      const Poincare::Layout& l,
+      const Poincare::SymbolContext& symbolContext) override;
+  void tidyCache() const override { m_cache = nullptr; }
+
+  /* Properties */
+
+  // Whether or not we can display the derivative
+  bool canDisplayDerivative() const {
+    return !isDerivative() && properties().canDisplayDerivative();
+  }
+  bool canComputeArea() const { return properties().canComputeArea(); }
+  bool canPlotDerivatives() const { return properties().canPlotDerivatives(); }
+  bool canComputeTangent() const {
+    return !isDerivative() && properties().canDisplayDerivative();
+  }
+  // If the ContinuousFunction can be shown in values table
+  bool isActiveInTable() const;
+  // If the ContinuousFunction can be shown in plot
+  bool isActiveInPlot() const;
+  // If the ContinuousFunction is named ("f(x)=...")
+  bool isNamed() const;
+  bool isDerivative() const { return recordData()->derivationOrder() > 0; }
+  uint8_t derivationOrder() const { return recordData()->derivationOrder(); }
+  void setDerivationOrder(uint8_t order) {
+    recordData()->setDerivationOrder(order);
+  }
+  // Return the parent record for a derivative record
+  Ion::Storage::Record parentRecord() const {
+    return recordData()->parentRecord();
+  }
+  void setParentRecord(Ion::Storage::Record record) {
+    recordData()->setParentRecord(record);
+  }
+  OMG::ExpiringPointer<ContinuousFunction> parentFunction() const;
+  Poincare::UserExpression equationClone() const {
+    return static_cast<const Model*>(model())->equationClone(this);
+  }
+
+  bool shouldDisplayIntersections() const {
+    return !properties().isScatterPlot() && isActiveInPlot() &&
+           properties().canComputeIntersectionsWithFunctionsAlongSameVariable();
+  }
+  bool isActiveInequality() const {
+    return isActive() && !properties().isEquality();
+  }
+  bool isDiscontinuousOnFloatInterval(float minBound, float maxBound) const;
+  // Compute line parameters (slope and intercept) from ContinuousFunction
+  void getLineParameters(double* slope, double* intercept) const;
+  // Compute conic parameters from ContinuousFunction
+  Poincare::CartesianConic cartesianConicParameters() const;
+  // Return the number of subcurves to plot.
+  int numberOfSubCurves() const override {
+    return m_model.numberOfSubCurves(this);
+  }
+  /* Expression */
+
+  // Return the unaltered equation expression, replacing unknown symbols.
+  Poincare::UserExpression originalEquation() const {
+    return m_model.originalEquation(this, symbol());
+  }
+  // Update plotType as well as tMin and tMax values.
+  void updateModel(bool wasCartesian);
+  void updateDerivativeModels();
+  void setActiveDerivatives();
+
+  const Poincare::PreparedFunction& expressionApproximated(
+      int derivationOrder = 0) const {
+    return m_model.expressionApproximated(this, derivationOrder);
+  }
+  Poincare::SystemExpression parametricForm() const {
+    return m_model.parametricForm(this);
+  }
+
+  /* Evaluation */
+
+  Poincare::Coordinate2D<double> evaluate2DAtParameter(
+      double t, int curveIndex = 0) const {
+    return templatedApproximateAtParameter(t, curveIndex);
+  }
+  Poincare::Coordinate2D<float> evaluateXYAtParameter(
+      float t, int curveIndex = 0) const override {
+    return m_cache ? m_cache->valueForParameter(this, t, curveIndex)
+                   : privateEvaluateXYAtParameter<float>(t, curveIndex);
+  }
+  Poincare::Coordinate2D<double> evaluateXYAtParameter(
+      double t, int curveIndex = 0) const override {
+    return privateEvaluateXYAtParameter<double>(t, curveIndex);
+  }
+
+  /* Derivative */
+
+  // If derivative should be displayed
+  bool displayValueFirstDerivative() const {
+    return canDisplayDerivative() &&
+           recordData()->displayValueFirstDerivative();
+  }
+  bool displayPlotFirstDerivative() const {
+    return canDisplayDerivative() && recordData()->displayPlotFirstDerivative();
+  }
+  bool displayValueSecondDerivative() const {
+    return canDisplayDerivative() &&
+           recordData()->displayValueSecondDerivative();
+  }
+  bool displayPlotSecondDerivative() const {
+    return canDisplayDerivative() &&
+           recordData()->displayPlotSecondDerivative();
+  }
+  bool displayPlotDerivative(int order) const {
+    assert(order == 1 || order == 2);
+    return order == 1 ? displayPlotFirstDerivative()
+                      : displayPlotSecondDerivative();
+  }
+  bool displayValueDerivative(int order) const {
+    assert(order == 1 || order == 2);
+    return order == 1 ? displayValueFirstDerivative()
+                      : displayValueSecondDerivative();
+  }
+  // Set derivative display status (high-level: also creates/destroys record)
+  Ion::Storage::Record::ErrorStatus setDisplayPlotDerivative(int order,
+                                                             bool display);
+  Ion::Storage::Record::ErrorStatus setDisplayValueDerivative(int order,
+                                                              bool display);
+
+  void valuesToDisplayOnCurve(bool* image, bool* firstDerivative,
+                              bool* secondDerivative) const;
+
+  // Approximate derivative at t, on given sub curve if there is one
+  template <typename T>
+  Poincare::PointOrRealScalar<T> approximateDerivative(
+      T t, int derivationOrder = 1, bool useDomain = true) const;
+  double approximateSlope(double t) const;
+
+  /* tMin, tMax and tAuto */
+
+  float tMin() const override {
+    return tAuto() ? autoTMin() : recordData()->tMin();
+  }
+  float tMax() const override {
+    return tAuto() ? autoTMax() : recordData()->tMax();
+  }
+  // If TAuto is true, domain has auto values (which may depend on angle unit)
+  bool tAuto() const { return recordData()->tAuto(); }
+  void setTMin(float tMin);
+  void setTMax(float tMax);
+  void setTAuto(bool tAuto);
+  float autoTMax() const;
+  float autoTMin() const;
+
+  /* Solver */
+
+  // If m_expressionApproximated is based on costly algorithm
+  bool approximationBasedOnCostlyAlgorithms() const;
+  /* A solver will be run from 'start' to 'end' on this function. Trim 'start'
+   * and 'end' to the interval of definition. */
+  void trimResolutionInterval(double* start, double* end) const;
+
+  /* Integral */
+
+  // Return the expression of the integral between start and end
+  Poincare::SystemExpression sumBetweenBounds(double start,
+                                              double end) const override;
+
+  /* Cache */
+
+  ContinuousFunctionCache* cache() const { return m_cache; }
+  void setCache(ContinuousFunctionCache* v) { m_cache = v; }
+  void didBecomeInactive() override { tidyCache(); }
+
+  constexpr static char k_unnamedRecordFirstChar = '?';
+
+  /* Scatter plot helper */
+  Poincare::ScatterPlotIterable iterateScatterPlot() const {
+    assert(properties().isScatterPlot());
+    return Poincare::ScatterPlotIterable(expressionReduced());
+  }
+
+ private:
+  Ion::Storage::Record::ErrorStatus createOrDeleteDerivativeRecord(
+      int order, bool oldPlot, bool oldValue, bool newPlot, bool newValue);
+
+  constexpr static float k_polarParamRangeSearchNumberOfPoints =
+      100.0f;  // This is ad hoc, no special justification
+
+  /* Range */
+
+  /* Return step computed from t range or NAN if properties().isCartesian() is
+   * true. */
+  float rangeStep() const override;
+
+  /* Function */
+  // Insert ContinuousFunction's name in buffer ("f" or "y")
+  size_t nameWithoutArgument(char* buffer, size_t bufferSize,
+                             int derivationOrder = 0) const;
+  /* Expressions */
+
+  // Return the expression representing the equation for computations
+  const Poincare::AnalysisExpression& expressionReducedForAnalysis() const {
+    return m_model.expressionReducedForAnalysis(this);
+  }
+  // Return the reduced expression of the slope (dy/dx)
+  Poincare::PreparedFunctionScalar expressionSlopeReduced() const {
+    return m_model.expressionSlopeReduced(this);
+  }
+
+  /* Evaluation */
+
+  // Evaluate XY at parameter (distinct from approximation with Polar types)
+  template <typename T>
+  Poincare::Coordinate2D<T> privateEvaluateXYAtParameter(
+      T t, int subCurveIndex = -1) const;
+  // Approximate XY at parameter
+  template <typename T>
+  Poincare::Coordinate2D<T> templatedApproximateAtParameter(
+      T t, int subCurveIndex = -1) const;
+
+  /* Record */
+
+  class __attribute__((packed)) RecordDataBuffer
+      : public Shared::Function::RecordDataBuffer {
+   public:
+    RecordDataBuffer(Escher::ThemeComponent color);
+
+    bool displayValueFirstDerivative() const {
+      return m_derivativesOptions.valueFirstDerivative;
+    }
+    bool displayPlotFirstDerivative() const {
+      return m_derivativesOptions.plotFirstDerivative;
+    }
+    bool displayValueSecondDerivative() const {
+      return m_derivativesOptions.valueSecondDerivative;
+    }
+    bool displayPlotSecondDerivative() const {
+      return m_derivativesOptions.plotSecondDerivative;
+    }
+    void setDisplayValueFirstDerivative(bool display) {
+      m_derivativesOptions.valueFirstDerivative = display;
+    }
+    void setDisplayPlotFirstDerivative(bool display) {
+      m_derivativesOptions.plotFirstDerivative = display;
+    }
+    void setDisplayValueSecondDerivative(bool display) {
+      m_derivativesOptions.valueSecondDerivative = display;
+    }
+    void setDisplayPlotSecondDerivative(bool display) {
+      m_derivativesOptions.plotSecondDerivative = display;
+    }
+    float tMin() const {
+      assert(!m_tAuto);
+      return m_domain.min();
+    }
+    float tMax() const {
+      assert(!m_tAuto);
+      return m_domain.max();
+    }
+    bool tAuto() const { return m_tAuto; }
+    void setTMin(float tMin) {
+      assert(!m_tAuto);
+      m_domain.setMinKeepingValid(tMin);
+    }
+    void setTMax(float tMax) {
+      assert(!m_tAuto);
+      m_domain.setMaxKeepingValid(tMax);
+    }
+    void setTAuto(bool tAuto) { m_tAuto = tAuto; }
+
+    uint8_t derivationOrder() const { return m_derivationOrder; }
+    void setDerivationOrder(uint8_t order) { m_derivationOrder = order; }
+    Ion::Storage::Record parentRecord() const {
+      return Ion::Storage::Record(m_parentRecordCRC);
+    }
+    void setParentRecord(Ion::Storage::Record record) {
+      m_parentRecordCRC = static_cast<uint32_t>(record);
+    }
+
+   private:
+    PackedRange1D m_domain;
+    struct DerivativesOptions {
+      bool valueFirstDerivative : 1;
+      bool plotFirstDerivative : 1;
+      bool valueSecondDerivative : 1;
+      bool plotSecondDerivative : 1;
+    };
+    DerivativesOptions m_derivativesOptions;
+    bool m_tAuto;
+    uint8_t m_derivationOrder;
+    uint32_t m_parentRecordCRC;
+    /* In the record at the end, there is the expression of the function,
+     * directly copied from the pool. */
+    // char m_expression[0];
+  };
+
+  // Return metadata size
+  size_t metaDataSize() const override { return sizeof(RecordDataBuffer); }
+  // Return record data
+  RecordDataBuffer* recordData() const {
+    assert(!isNull());
+    return reinterpret_cast<RecordDataBuffer*>(
+        const_cast<void*>(value().buffer));
+  }
+
+  /* Model */
+
+  class Model : public ExpressionModel {
+   public:
+    // Return the expression to plot.
+    const Poincare::SystemExpression& expressionReduced(
+        const Ion::Storage::Record* record) const override;
+    /* Return the expression reduced with approximated non symbols for faster
+     * plot */
+    const Poincare::PreparedFunction& expressionApproximated(
+        const Ion::Storage::Record* record, int derivationOrder = 0) const;
+    // Return the expression reduced, and computes plotType
+    const Poincare::AnalysisExpression& expressionReducedForAnalysis(
+        const Ion::Storage::Record* record) const;
+    // Return the expression of the named function (right side of the equal)
+    Poincare::UserExpression expressionClone(
+        const Ion::Storage::Record* record) const override;
+    // Return the full expression (without stripping the left-hand side)
+    Poincare::UserExpression equationClone(
+        const Ion::Storage::Record* record) const {
+      return ExpressionModel::expressionClone(record);
+    }
+    const Poincare::Internal::Tree* expressionTree(
+        const Ion::Storage::Record* record) const override;
+    // Return the entire expression that the user input. Replace symbols.
+    Poincare::UserExpression originalEquation(
+        const Ion::Storage::Record* record, CodePoint symbol) const;
+    struct EquationData {
+      Poincare::UserExpression equation;
+      Poincare::Comparison::Operator equationType;
+      ContinuousFunctionProperties::SymbolType functionSymbol;
+      bool isCartesianEquation;
+    };
+    /* Return the expression representing the equation
+     * (turns "f(x)=xy" into "xy" and "xy=a" into "xy-a") */
+    EquationData expressionEquation(const Ion::Storage::Record* record) const;
+    // Return the slope (dy/dx)
+    Poincare::PreparedFunctionScalar expressionSlopeReduced(
+        const Ion::Storage::Record* record) const;
+    // Rename the record if needed. Record pointer might get corrupted.
+    Ion::Storage::Record::ErrorStatus renameRecordIfNeeded(
+        Ion::Storage::Record* record, bool isNewRecordCreation) const;
+    // Set the record content using BuildFunctionFromLayout
+    Ion::Storage::Record::ErrorStatus setContent(
+        Ion::Storage::Record* record, const Poincare::Layout& l,
+        const Poincare::SymbolContext& symbolContext,
+        CodePoint symbol = 0) override;
+    // Tidy the model
+    void tidyDownstreamPoolFrom(
+        const Poincare::PoolObject* treePoolCursor) const override;
+    // m_plotType getter
+    ContinuousFunctionProperties properties(
+        const Ion::Storage::Record* record) const;
+    int numberOfSubCurves(const Ion::Storage::Record* record) const;
+    // Reset m_plotType to Uninitialized type
+    void resetProperties() const { m_properties.reset(); }
+    Poincare::SystemExpression parametricForm(
+        const Ion::Storage::Record* record) const;
+    // Layout
+    Poincare::Layout layout(const Ion::Storage::Record* record,
+                            CodePoint symbol) const override;
+
+   private:
+    static Poincare::AnalysisExpression ComputeExpressionForAnalysis(
+        const Poincare::UserExpression& equation,
+        Poincare::ComplexFormat complexFormat, Poincare::AngleUnit angleUnit);
+    static CodePoint CodePointForSymbol(const Poincare::UserExpression& symbol);
+    // Build the expression from layout, handling f(x)=... cartesian equations
+    static Poincare::UserExpression BuildFunctionFromLayout(
+        const Poincare::Layout& l, CodePoint symbol = 0,
+        const Poincare::SymbolContext& symbolContext =
+            Poincare::EmptySymbolContext{});
+
+    // Rename record to a hidden record name
+    static Ion::Storage::Record::ErrorStatus RenameRecordToHidden(
+        Ion::Storage::Record* record);
+    // Update parent record on derivative records after a rename
+    static void UpdateDerivativeRecordsWithNewParent(
+        Ion::Storage::Record oldParentRecord,
+        Ion::Storage::Record newParentRecord);
+
+    // Return address of the record's expression
+    void* expressionAddress(const Ion::Storage::Record* record) const override;
+    // Return size of the record's expression
+    size_t expressionSize(const Ion::Storage::Record* record) const override;
+
+    void setStorageChangeFlag() const override;
+
+    mutable ContinuousFunctionProperties m_properties;
+    /* m_expression is used for values in table.
+     * m_expressionApproximated is used for plot, autozoom and points of
+     * interest.
+     * m_expressionForAnalysis is used for analysis.
+     */
+    mutable Poincare::AnalysisExpression m_expressionForAnalysis;
+    mutable Poincare::PreparedFunction m_expressionApproximated;
+    mutable Poincare::PreparedFunction m_expressionFirstDerivateApproximated;
+    mutable Poincare::PreparedFunction m_expressionSecondDerivateApproximated;
+    mutable Poincare::PreparedFunctionScalar m_expressionSlope;
+  };
+
+  // Return model pointer
+  const ExpressionModel* model() const override { return &m_model; }
+
+  Model m_model;
+  mutable ContinuousFunctionCache* m_cache;
+};
+
+}  // namespace Shared

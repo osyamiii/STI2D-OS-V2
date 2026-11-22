@@ -1,0 +1,88 @@
+/* This file contains css for the layout of the standalone simulator html file */
+
+body {
+  background: #C2C2C2;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.col-fullscreen {
+  display: none;
+  width: 60%;
+  float: left;
+  height: 100vh;
+}
+
+.col-fullscreen canvas {
+  margin-top: 2vh;
+}
+
+.col-fullscreen canvas {
+  max-height: 96vh;
+  max-width: 64vw;
+#ifdef LAYOUT_epsilon
+  height: 48vw; /* 64 * 240 / 320 */
+#endif
+#ifdef LAYOUT_scandium
+  height: 27.84vw; /* 64 * 87 / 200 */
+#endif
+  width: auto;
+}
+
+body.fullscreen .col-fullscreen {
+  display: flex;
+}
+
+body.fullscreen .col-calculator {
+  width: 35%;
+  float: left;
+}
+
+.calculator-container {
+  margin-top: 2vh;
+}
+
+.calculator-container img {
+  /* The image set the size of the calculator */
+  max-height: 90.0vh;
+  max-width: 100%;
+}
+
+.actions {
+  position: relative;
+  margin-left: 20px; /* Center the buttons - compensate the 10px margin below */
+}
+
+a.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 10px;
+  height: 2vh;
+  aspect-ratio: 1.2;
+  padding: 1vh 2vh;
+  border: 1px solid black;
+  border-radius: 100px;
+  cursor: pointer;
+  opacity: 0.65;
+}
+
+a.action:hover {
+  opacity: 1.0;
+  background-color: rgba(0,0,0,0.125);
+}
+
+a.action svg {
+  display: block;
+  height: 100%;
+}
+
+a.action svg.action-fullscreen-exit,
+body.fullscreen a.action svg.action-fullscreen-expand {
+  display: none;
+}
+
+body.fullscreen a.action svg.action-fullscreen-exit {
+  display: block;
+}

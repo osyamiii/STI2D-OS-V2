@@ -1,0 +1,22 @@
+#include <escher/init.h>
+#include <poincare/init.h>
+
+#include "exam_mode_manager.h"
+#include "global_preferences.h"
+#include "init.h"
+#include "shared/global_store.h"
+
+namespace Apps {
+
+void Init() {
+  Shared::GlobalStore::Init();
+  GlobalPreferences::Init();
+  ExamModeManager::Init();
+  Shared::GlobalContextAccessor::Init();
+  Poincare::Init(GlobalPreferences::SharedGlobalPreferences(),
+                 ExamModeManager::ExamModePtr(),
+                 &Shared::GlobalContextAccessor::SequenceContext());
+  Escher::Init(GlobalPreferences::SharedGlobalPreferences());
+}
+
+}  // namespace Apps

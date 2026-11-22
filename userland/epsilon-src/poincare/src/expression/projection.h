@@ -1,0 +1,50 @@
+#pragma once
+
+#include <poincare/complex_format.h>
+#include <poincare/preferences.h>
+#include <poincare/simplification_parameters.h>
+#include <poincare/src/memory/tree_ref.h>
+#include <poincare/symbol_context.h>
+
+#include "dimension.h"
+
+namespace Poincare::Internal {
+
+class Projection {
+ public:
+  /* Change the input complex format to Cartesian if the Tree contains some
+   * complex nodes */
+  static ComplexFormat PreferredComplexFormat(
+      const Tree* e, ComplexFormat userComplexFormat,
+      SymbolicComputation symbolicComputation,
+      const SymbolContext& symbolContext);
+
+  /* User variables are fetched from the Context and replaced according to the
+  SymbolicComputation strategy */
+  static bool DeepReplaceUserSymbol(
+      Tree* e, const Poincare::SymbolContext& symbolContext,
+      SymbolicComputation symbolic);
+  // All user variables are replaced with Undefined
+  static bool DeepReplaceUserSymbolWithUndefined(Tree* e);
+  static bool DeepSystemProject(
+      Tree* e, const ProjectionParameters& projectionParameters,
+      const Dimension& dimension = Dimension());
+
+  /* Some projections are performed during advanced reduction instead so the
+   * metric can cancel it if unecessary. */
+  static bool Expand(Tree* e);
+
+  /* Return true if node simplification and display is forbidden by current
+   * preferences. */
+  static bool IsForbidden(const Tree* e);
+  // Return true if one of its descendants is forbidden by current preferences.
+  static bool HasForbiddenDescendants(const Tree* e);
+
+ private:
+  static bool ShallowReplaceUserSymbol(
+      Tree* e, const Poincare::SymbolContext& symbolContext,
+      SymbolicComputation symbolic);
+  static bool ShallowSystemProject(Tree* e, void* ctx);
+};
+
+}  // namespace Poincare::Internal

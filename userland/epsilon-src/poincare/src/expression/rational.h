@@ -1,0 +1,91 @@
+#pragma once
+
+#include <omg/troolean.h>
+#include <poincare/properties.h>
+#include <poincare/sign.h>
+#include <poincare/src/memory/tree.h>
+
+#include "integer.h"
+
+namespace Poincare::Internal {
+
+/* Rationals should only exist in their irreducible form, this is ensured at
+ * Rational Tree creation.
+ * Since many form are forbidden, there could be room for a rational size
+ * optimization. */
+
+class Rational final {
+ public:
+  static Tree* Push(IntegerHandler numerator, IntegerHandler denominator);
+  static Tree* Push(const Tree* numerator, const Tree* denominator) {
+    return Push(Integer::Handler(numerator), Integer::Handler(denominator));
+  }
+  template <typename T>
+  static T To(const Tree* e);
+  static IntegerHandler Numerator(const Tree* e);
+  static IntegerHandler Denominator(const Tree* e);
+  static inline bool IsNonIntegerRational(const Tree* e) {
+    return e->isRational() && !e->isInteger();
+  }
+
+  static inline Poincare::Properties Properties(const Tree* e) {
+    return Poincare::Properties(
+        Poincare::Sign(e->isZero(), e->isStrictlyPositiveRational(),
+                       e->isStrictlyNegativeRational()),
+        !e->isInteger(), false);
+  }
+  static inline Poincare::Sign Sign(const Tree* e) {
+    return Properties(e).sign();
+  }
+  static bool SetSign(Tree* e, NonStrictSign sign);
+
+  static int Compare(const Tree* e1, const Tree* e2);
+  static int CompareAbs(const Tree* e1, const Tree* e2);
+  static Tree* Addition(const Tree* e1, const Tree* e2);
+  static Tree* Addition(const Tree* e1, const Tree* e2, const Tree* e3,
+                        auto... others) {
+    Tree* result = Addition(e1, e2);
+    result->moveTreeOverTree(Addition(result, e3, others...));
+    return result;
+  }
+  static Tree* Multiplication(const Tree* e1, const Tree* e2);
+  static Tree* Multiplication(const Tree* e1, const Tree* e2, const Tree* e3,
+                              auto... others) {
+    return Multiplication(Multiplication(e1, e2), e3, others...);
+
+    Tree* result = Multiplication(e1, e2);
+    result->moveTreeOverTree(Multiplication(result, e3, others...));
+    return result;
+  }
+  // Return the rational result of e1/e2, with e1, e2 rationals and e2 != 0
+  static Tree* NonZeroDivision(const Tree* e1, const Tree* e2);
+  struct IntegerOperationResult {
+    Tree* tree;
+    bool hasOverflown;
+  };
+
+  // IntegerPower of (p1/q1)^(p2) --> (p1^p2)/(q1^p2)
+  static IntegerOperationResult IntegerPower(const Tree* e1, const Tree* e2);
+
+  static bool IsGreaterThanOne(const Tree* e);
+  static bool IsStrictlyPositiveUnderOne(const Tree* e);
+  static OMG::Troolean AbsSmallerThanPi(const Tree* e);
+
+  static Poincare::ComplexProperties ComplexPropertiesOfLn(const Tree* e);
+
+  static bool IsMinusHalf(const Tree* e);
+
+ private:
+  static bool IsIrreducible(const Tree* e);
+  static Tree* PushIrreducible(IntegerHandler numerator,
+                               IntegerHandler denominator);
+  static Tree* PushIrreducible(const Tree* numerator, const Tree* denominator) {
+    return PushIrreducible(Integer::Handler(numerator),
+                           Integer::Handler(denominator));
+  }
+  // Compare num1/denom1 and num2/denom2, with denom1 and denom2 positive.
+  static int CompareHandlers(IntegerHandler num1, IntegerHandler denom1,
+                             IntegerHandler num2, IntegerHandler denom2);
+};
+
+}  // namespace Poincare::Internal

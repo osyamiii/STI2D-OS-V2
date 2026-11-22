@@ -1,0 +1,83 @@
+
+#include "row_parameter_controller.h"
+
+#include <escher/app.h>
+#include <poincare/print.h>
+
+#include "store_controller.h"
+
+namespace Statistics::Categorical {
+
+RowParameterController::RowParameterController(
+    Escher::Responder* parentResponder, Store* store,
+    Escher::StackViewController* stackViewController,
+    StoreController* storeController)
+    : Escher::ExplicitSelectableListViewController(parentResponder),
+      m_rowNameCell(&m_selectableListView, this),
+      m_store(store),
+      m_stackViewController(stackViewController),
+      m_storeController(storeController) {
+  m_rowNameCell.label()->setMessage(I18n::Message::RowName);
+  m_clearColumnCell.label()->setMessage(I18n::Message::ClearRow);
+}
+
+bool RowParameterController::handleEvent(Ion::Events::Event event) {
+  Escher::AbstractMenuCell* cell =
+      static_cast<Escher::AbstractMenuCell*>(selectedCell());
+  assert(m_row >= 0);
+  if (!cell->canBeActivatedByEvent(event)) {
+    return false;
+  }
+  if (cell == &m_clearColumnCell) {
+    m_stackViewController->pop();
+    m_storeController->popupConfirmation(false, m_row);
+    return true;
+  }
+  return false;
+}
+
+bool RowParameterController::textFieldDidFinishEditing(
+    Escher::AbstractTextField* textField, Ion::Events::Event event) {
+  const char* name = textField->draftText();
+  // Remove last glyph until size if below limit
+  while (UTF8Helper::StringGlyphLength(name) > Store::k_labelGlyphLength ||
+         strlen(name) > Store::k_labelLength) {
+    UTF8Helper::RemovePreviousGlyph(name,
+                                    const_cast<char*>(name + strlen(name)));
+  }
+  m_store->setCategoryName(name, m_row);
+  m_rowNameCell.textField()->setText(name);
+  m_selectableListView.reloadSelectedCell();
+  if (event == Ion::Events::Down) {
+    m_selectableListView.handleEvent(event);
+  }
+  return true;
+}
+
+const Escher::AbstractMenuCell* RowParameterController::cell(int row) const {
+  assert(0 <= row && row < k_numberOfCells);
+  std::array<const Escher::AbstractMenuCell*, k_numberOfCells> cells = {
+      &m_rowNameCell,
+      &m_clearColumnCell,
+  };
+  return cells[row];
+}
+
+const char* RowParameterController::title() const {
+  char buffer[sizeof(Store::Label)];
+  m_store->getCategoryName(m_row, buffer, sizeof(buffer));
+  Poincare::Print::CustomPrintf(m_titleBuffer, sizeof(m_titleBuffer),
+                                I18n::translate(I18n::Message::RowOptions),
+                                buffer);
+  return m_titleBuffer;
+}
+
+void RowParameterController::setRow(int row) {
+  m_row = row;
+  char buffer[sizeof(Store::Label)];
+  m_store->getCategoryName(row, buffer, sizeof(buffer));
+  m_rowNameCell.textField()->setText(buffer);
+  m_selectableListView.selectRow(0);
+}
+
+}  // namespace Statistics::Categorical

@@ -1,0 +1,26 @@
+#pragma once
+
+#include <poincare/src/memory/tree.h>
+
+namespace Poincare::Internal {
+
+class AdvancedOperation {
+ public:
+  /* Some subTrees are ignored by advanced reduction. */
+  static bool CanSkipTree(const Tree* e);
+
+  static bool ContractImRe(Tree* e);
+  static bool ExpandImRe(Tree* e);
+  static bool ContractAbs(Tree* e);
+  static bool ExpandAbs(Tree* e);
+  static bool ContractExp(Tree* e);
+  static bool ExpandExp(Tree* e);
+  static bool ContractMult(Tree* e);
+  static bool ExpandMult(Tree* e);
+  static bool ExpandPower(Tree* e);
+  static bool ContractCeilFloor(Tree* e);
+  static bool ExpandCeilFloor(Tree* e);
+  static bool ExpandComplexArgument(Tree* e);
+};
+
+}  // namespace Poincare::Internal

@@ -1,0 +1,29 @@
+#pragma once
+
+#include <escher/buffer_text_highlight_cell.h>
+#include <escher/explicit_list_view_data_source.h>
+
+#include "inference/constants.h"
+#include "inference/models/significance_test.h"
+
+namespace Inference {
+
+class ComparisonOperatorPopupDataSource
+    : public Escher::ExplicitListViewDataSource {
+ public:
+  static Poincare::Comparison::Operator OperatorTypeForRow(int row);
+
+  ComparisonOperatorPopupDataSource(SignificanceTest* test) : m_test(test) {}
+  int numberOfRows() const override { return k_numberOfOperators; }
+  const Escher::HighlightCell* cell(int row) const override {
+    return &m_cells[row];
+  }
+  void updateMessages();
+
+ private:
+  constexpr static int k_numberOfOperators = 3;
+  Escher::SmallBufferTextHighlightCell m_cells[k_numberOfOperators];
+  SignificanceTest* m_test;
+};
+
+}  // namespace Inference

@@ -1,0 +1,43 @@
+#pragma once
+
+#include <poincare/layout.h>
+#include <poincare/user_expression.h>
+
+namespace Poincare {
+
+namespace SequenceHelper {
+
+enum class RecursiveNotation {
+  Default = 0,  // u(n+2) = u(n+1)+u(n)
+  Shifted = 1,  // u(n) = u(n-1)+u(n-2)
+};
+
+enum class Type : uint8_t {
+  Explicit = 0,
+  SingleRecurrence = 1,
+  DoubleRecurrence = 2
+};
+
+constexpr static const char* k_sequenceNames[] = {"u", "v", "w"};
+
+// Layout
+bool IsSequenceInsideRack(const Layout& l);
+Layout ExtractExpressionAtRow(const Layout& l, int row = 0);
+void SetFirstRank(const Layout& l, uint8_t firstRank);
+
+// Expression
+bool MainExpressionContainsForbiddenTerms(
+    const UserExpression& e, const SymbolContext& symbolContext,
+    const char* name, Type type, int initialRank, RecursiveNotation notation,
+    bool recursion, bool systemSymbol, bool otherSequences);
+bool IsOfValidDimension(const UserExpression& e,
+                        const SymbolContext& symbolContext);
+UserExpression InitialExpression(const char* name, Type type,
+                                 RecursiveNotation notation);
+UserExpression UpdateMainExpressionForNotation(const UserExpression& e,
+                                               Type type,
+                                               RecursiveNotation notation);
+
+}  // namespace SequenceHelper
+
+}  // namespace Poincare

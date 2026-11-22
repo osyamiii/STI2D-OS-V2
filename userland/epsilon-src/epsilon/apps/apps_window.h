@@ -1,0 +1,36 @@
+#pragma once
+
+#include <escher/window.h>
+
+#include "focus_manager.h"
+#include "title_bar_view.h"
+
+class AppsWindow : public Escher::Window {
+ public:
+  AppsWindow(FocusManager* focusManager);
+  void setTitle(I18n::Message title);
+  bool updateBatteryLevel();
+  bool updateIsChargingState();
+  bool updatePluggedState();
+  void refreshPreferences();
+  void reloadTitleBarView();
+  bool updateAlphaLock();
+  void hideTitleBarView(bool hide);
+  void updateBatteryAnimation();
+
+ private:
+#if ESCHER_VIEW_LOGGING
+  const char* className() const override;
+#endif
+  int numberOfSubviews() const override {
+    return 1 + hasContentView() + hasFocusedView();
+  }
+  void layoutSubviews(bool force = false) override;
+  Escher::View* subviewAtIndex(int index) override;
+  bool hasContentView() const { return m_contentView != nullptr; }
+  bool hasFocusedView() const { return m_focusManager->isActive(); }
+
+  TitleBarView m_titleBarView;
+  FocusManager* m_focusManager;
+  bool m_hideTitleBarView;
+};

@@ -1,0 +1,42 @@
+#pragma once
+
+#include <escher/even_odd_cell.h>
+#include <escher/i18n.h>
+#include <escher/message_text_view.h>
+
+namespace Escher {
+
+class EvenOddMessageTextCell : public EvenOddCell {
+ public:
+  EvenOddMessageTextCell(const TextFormat& format = {
+                             .style = {.font = KDFont::Size::Small},
+                             .horizontalAlignment = KDGlyph::k_alignCenter});
+  void setMessage(I18n::Message textContent) {
+    m_messageTextView.setMessage(textContent);
+  }
+  void setAlignment(float horizontalAlignment, float verticalAlignment);
+  void setHighlighted(bool highlighted) override;
+  void setTextColor(ThemeComponent color) {
+    m_messageTextView.setTextColor(color);
+  }
+  void setLeftMargin(KDCoordinate margin);
+
+ protected:
+  void updateSubviewsBackgroundAfterChangingState() override;
+  int numberOfSubviews() const override;
+  View* subviewAtIndex(int index) override;
+  void layoutSubviews(bool force = false) override;
+  MessageTextView m_messageTextView;
+  KDCoordinate m_leftMargin;
+};
+
+// Same as EvenOddMessageTextCell but uses the table even / odd color scheme
+class EvenOddTableMessageTextCell : public EvenOddMessageTextCell {
+ public:
+  using EvenOddMessageTextCell::EvenOddMessageTextCell;
+
+ protected:
+  ThemeComponent baseColor() const override { return BaseTableColor(m_even); }
+};
+
+}  // namespace Escher

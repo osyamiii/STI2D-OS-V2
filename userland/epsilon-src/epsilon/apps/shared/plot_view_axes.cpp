@@ -1,0 +1,535 @@
+#include "plot_view_axes.h"
+
+#include <apps/global_preferences.h>
+#include <escher/theme/color_picker.h>
+#include <limits.h>
+#include <poincare/print.h>
+
+#include <cmath>
+
+#include "poincare/expression_or_float.h"
+#include "poincare/k_tree.h"
+#include "poincare/src/expression/projection.h"
+#include "poincare_helpers.h"
+
+using namespace Poincare;
+
+namespace Shared {
+namespace PlotPolicy {
+
+// WithCartesianGrid
+
+void WithCartesianGrid::DrawGrid(const AbstractPlotView* plotView,
+                                 KDContext* ctx, KDRect rect) {
+  DrawGridLines(plotView, ctx, rect, OMG::Axis::Vertical, false);
+  DrawGridLines(plotView, ctx, rect, OMG::Axis::Horizontal, false);
+  DrawGridLines(plotView, ctx, rect, OMG::Axis::Vertical, true);
+  DrawGridLines(plotView, ctx, rect, OMG::Axis::Horizontal, true);
+}
+
+void WithCartesianGrid::DrawGridLines(const AbstractPlotView* plotView,
+                                      KDContext* ctx, KDRect rect,
+                                      OMG::Axis parallel, bool boldGrid) {
+  Escher::ThemeComponent component = boldGrid ? k_boldColor : k_lightColor;
+  bool oddIndexes = !boldGrid;
+  assert(plotView);
+  float min, max, step;
+  CurveViewRange* range = plotView->range();
+  if (parallel == OMG::Axis::Horizontal) {
+    min = range->yMin();
+    max = range->yMax();
+    step = PoincareHelpers::ToFloat(range->yGridUnit());
+  } else {
+    min = range->xMin();
+    max = range->xMax();
+    step = PoincareHelpers::ToFloat(range->xGridUnit());
+  }
+
+  int iMin = min / step;
+  int iMax = max / step;
+  KDColor resolvedColor = Escher::ColorPicker::Resolve(component);
+  for (int i = iMin + ((iMin % 2 == 0) == oddIndexes); i <= iMax; i += 2) {
+    plotView->drawStraightSegment(ctx, rect, parallel, i * step, -INFINITY,
+                                  INFINITY, resolvedColor);
+  }
+}
+
+// WithPolarGrid
+
+WithPolarGrid::RadiusBounds WithPolarGrid::ComputeRadiusBounds(
+    const AbstractPlotView* plotView, KDRect rect) {
+  /* We translate the pixel coordinates into floats, adding/subtracting 1 to
+   * account for conversion errors. */
+  float xMin = plotView->pixelToFloat(OMG::Axis::Horizontal, rect.left() - 1);
+  float xMax = plotView->pixelToFloat(OMG::Axis::Horizontal, rect.right() + 1);
+  float yMin = plotView->pixelToFloat(OMG::Axis::Vertical, rect.bottom() + 1);
+  float yMax = plotView->pixelToFloat(OMG::Axis::Vertical, rect.top() - 1);
+
+  float xAbsoluteMax = std::max(-xMin, xMax);
+  float yAbsoluteMax = std::max(-yMin, yMax);
+  float xAbsoluteMin = xMin <= 0 && xMax >= 0 ? 0 : std::min(-xMin, xMax);
+  float yAbsoluteMin = yMin <= 0 && yMax >= 0 ? 0 : std::min(-yMin, yMax);
+
+  return {
+      .min = sqrtf(xAbsoluteMin * xAbsoluteMin + yAbsoluteMin * yAbsoluteMin),
+      .max = sqrtf(xAbsoluteMax * xAbsoluteMax + yAbsoluteMax * yAbsoluteMax),
+  };
+}
+
+/* Associate a point on the grid to a graduation index in
+ * [-k_numberOfGraduations/2, k_numberOfGraduations/2] around the polar circle.
+ */
+int WithPolarGrid::PointToGraduation(float x, float y) {
+  return static_cast<int>(
+      std::floor(atan2(y, x) * WithPolarGrid::k_numberOfGraduations /
+                 (2.f * static_cast<float>(M_PI))));
+}
+
+WithPolarGrid::GraduationBounds WithPolarGrid::ComputeGraduationBounds(
+    const AbstractPlotView* plotView, KDRect rect, float xMin, float xMax,
+    float yMin, float yMax) {
+  float xAbsoluteMax = xMax > -xMin ? xMax : xMin;
+  float yAbsoluteMax = yMax > -yMin ? yMax : yMin;
+  float xAbsoluteMin = xMin > -xMax ? xMin : xMax;
+  float yAbsoluteMin = yMin > -yMax ? yMin : yMax;
+
+  GraduationBounds bounds;
+  if (xMin <= 0 && 0 <= xMax && yMin <= 0 && 0 <= yMax) {
+    // The rect contains the origin.
+    bounds.min = 0;
+    bounds.max = k_numberOfGraduations;
+  } else if (xMin <= 0 && 0 <= xMax) {
+    // The rect crosses the Y axis.
+    bounds.min = PointToGraduation(xMin, yAbsoluteMin);
+    bounds.max = PointToGraduation(xMax, yAbsoluteMin);
+  } else if (yMin <= 0 && 0 <= yMax) {
+    // The rect crosses the X axis.
+    bounds.min = PointToGraduation(xAbsoluteMin, yMin);
+    bounds.max = PointToGraduation(xAbsoluteMin, yMax);
+    if (xMax < 0) {
+      /* The rect crosses the -Ox ray. As PointToGraduation outputs in the range
+       * [-k_numberOfGraduations/2, k_numberOfGraduations/2], the negative
+       * graduation must be complemented. */
+      bounds.min += k_numberOfGraduations;
+    }
+  } else {
+    bounds.min = PointToGraduation(xAbsoluteMax, yAbsoluteMin);
+    bounds.max = PointToGraduation(xAbsoluteMin, yAbsoluteMax);
+  }
+
+  if (bounds.min > bounds.max) {
+    std::swap(bounds.min, bounds.max);
+  }
+  return bounds;
+}
+
+void WithPolarGrid::DrawPolarCircles(const AbstractPlotView* plotView,
+                                     KDContext* ctx, KDRect rect) {
+  RadiusBounds radius = ComputeRadiusBounds(plotView, rect);
+
+  float step = PoincareHelpers::ToFloat(plotView->range()->xGridUnit());
+
+  for (int i = std::max<int>(1, std::floor(radius.min / step));
+       i <= std::ceil(radius.max / step); i++) {
+    plotView->drawCircle(
+        ctx, rect, {0.f, 0.f}, i * step,
+        Escher::ColorPicker::Resolve(i % 2 ? k_lightColor : k_boldColor));
+  }
+}
+
+void WithPolarGrid::FormatAngleLabel(std::span<char> buffer, int index,
+                                     AngleUnit angleUnit) {
+  assert(index >= 0 && index <= k_numberOfGraduations);
+  bool reductionFailure = false;
+  UserExpression label =
+      UserExpression::Create(
+          KMult(KA, KB, KPow(KC, -1_e)),
+          {.KA = UserExpression::Builder(index),
+           .KB = UserExpression::BuildPeriod(angleUnit),
+           .KC = UserExpression::Builder(k_numberOfGraduations)})
+          .cloneAndSimplify({.user = {.angleUnit = angleUnit},
+                             .reductionPolicy = {.advanced = false}},
+                            &reductionFailure);
+  assert(!reductionFailure);
+  size_t len = label.serialize(buffer, true);
+  // Append unit suffix.
+  if (angleUnit == AngleUnit::Degree) {
+    Print::CustomPrintf(buffer.data() + len, buffer.size() - len, "°");
+  } else if (angleUnit == AngleUnit::Gradian) {
+    Print::CustomPrintf(buffer.data() + len, buffer.size() - len, "gon");
+  }
+}
+
+void WithPolarGrid::TryDrawLabel(const AbstractPlotView* plotView,
+                                 KDContext* ctx, KDRect rect, const char* text,
+                                 Poincare::Coordinate2D<float> position,
+                                 AbstractPlotView::RelativePosition xRelative,
+                                 AbstractPlotView::RelativePosition yRelative,
+                                 KDRect* lastDrawnLabelRect) {
+  KDRect labelRect = plotView->labelRect(text, position, xRelative, yRelative);
+  if (labelRect.intersects(*lastDrawnLabelRect)) {
+    return;
+  }
+  plotView->drawLabel(ctx, rect, text, labelRect,
+                      Escher::ThemeComponent::GraphPolarGridLabels);
+  *lastDrawnLabelRect = labelRect;
+}
+
+void WithPolarGrid::DrawGrid(const AbstractPlotView* plotView, KDContext* ctx,
+                             KDRect rect, AngleUnit angleUnit) {
+  assert(angleUnit != AngleUnit::None);
+  DrawPolarCircles(plotView, ctx, rect);
+  /* The widest label depends on angle unit:
+   * - Radian '11π/6' 6 glyphs
+   * - Degree '360°' 4 glyphs
+   * - Gradian '1100/3gon' 9 glyphs
+   */
+  int maxLabelGlyphs = angleUnit == AngleUnit::Radian   ? 6
+                       : angleUnit == AngleUnit::Degree ? 4
+                                                        : 9;
+  int graduationHorizontalMargin =
+      KDFont::GlyphWidth(KDFont::Size::Small) * maxLabelGlyphs / 2;
+  constexpr int graduationVerticalMargin =
+      KDFont::GlyphHeight(KDFont::Size::Small) / 2;
+  constexpr int bufferSize = sizeof("1100/3gon");
+  char buffer[bufferSize];
+  KDRect bounds = plotView->bounds();
+  float xMin = plotView->pixelToFloat(
+      OMG::Axis::Horizontal, bounds.left() + graduationHorizontalMargin);
+  float xMax = plotView->pixelToFloat(
+      OMG::Axis::Horizontal, bounds.right() - graduationHorizontalMargin);
+  float yMin = plotView->pixelToFloat(
+      OMG::Axis::Vertical, bounds.bottom() - graduationVerticalMargin);
+  float yMax = plotView->pixelToFloat(OMG::Axis::Vertical,
+                                      bounds.top() + graduationVerticalMargin);
+
+  float bannerHeight =
+      plotView->bannerView() && plotView->bannerOverlapsGraph()
+          ? plotView->bannerView()->bounds().height() * plotView->pixelHeight()
+          : 0.f;
+  yMin += bannerHeight;
+
+  float labelMargin = AbstractPlotView::k_labelMargin * plotView->pixelHeight();
+  float minimumSquareDistanceToCenter =
+      std::pow(k_minimumGraduationDistanceToCenter * plotView->pixelWidth(), 2);
+
+  // Find graduation bounds.
+  RadiusBounds radius = ComputeRadiusBounds(plotView, rect);
+  GraduationBounds graduation =
+      ComputeGraduationBounds(plotView, rect, xMin, xMax, yMin, yMax);
+
+  constexpr int k_stepsPerQuarter = k_numberOfGraduations / 4;
+  constexpr int k_stepsPerHalf = k_numberOfGraduations / 2;
+
+  // Draw lines
+  for (int i = graduation.min; i < graduation.max; i++) {
+    if (i % k_stepsPerQuarter == 0) {
+      continue;  // Don't draw lines that overlap the axes.
+    }
+    float angleRadian =
+        i * 2.f * static_cast<float>(M_PI) / k_numberOfGraduations;
+    float cos = std::cos(angleRadian);
+    float sin = std::sin(angleRadian);
+    KDPoint pixelFrom = {plotView->floatToKDCoordinatePixel(
+                             OMG::Axis::Horizontal, cos * radius.min),
+                         plotView->floatToKDCoordinatePixel(OMG::Axis::Vertical,
+                                                            sin * radius.min)};
+    KDPoint pixelTo = {plotView->floatToKDCoordinatePixel(OMG::Axis::Horizontal,
+                                                          cos * radius.max),
+                       plotView->floatToKDCoordinatePixel(OMG::Axis::Vertical,
+                                                          sin * radius.max)};
+    ctx->drawAntialiasedLine(
+        pixelFrom, pixelTo,
+        Escher::ColorPicker::Resolve((i % 2 == 0) ? k_boldColor : k_lightColor),
+        Escher::ColorPicker::Resolve(plotView->k_backgroundColor));
+  }
+
+  // Draw labels on top of the lines.
+  KDRect lastDrawnLabelRect = KDRectZero;
+  for (int i = graduation.min; i < graduation.max; i++) {
+    if (i % 2 != 0) {
+      // Only bold lines are labeled.
+      continue;
+    }
+    // Small trick to avoid laying out negative angles.
+    int labelIndex = (i + k_numberOfGraduations) % k_numberOfGraduations;
+    FormatAngleLabel({buffer, bufferSize}, labelIndex, angleUnit);
+    // Compute the position of the label.
+    float x, y;
+    float angleRadian =
+        i * 2.f * static_cast<float>(M_PI) / k_numberOfGraduations;
+    float cos = std::cos(angleRadian);
+    float sin = std::sin(angleRadian);
+    AbstractPlotView::RelativePosition verticalRelativePosition =
+        AbstractPlotView::RelativePosition::There;
+    AbstractPlotView::RelativePosition horizontalRelativePosition =
+        AbstractPlotView::RelativePosition::There;
+    float xQuadrant = cos >= 0 ? xMax : xMin;
+    float yQuadrant = sin >= 0 ? yMax : yMin;
+    bool isHorizontalAxis = (i % k_stepsPerHalf == 0);
+    bool isVerticalAxis = (i - k_stepsPerQuarter) % k_stepsPerHalf == 0;
+    // Is the ray exiting the screen through a side?
+    if (std::fabs(cos) * std::fabs(yQuadrant) >
+        std::fabs(sin) * std::fabs(xQuadrant)) {
+      x = xQuadrant;
+      y = xQuadrant * sin / cos - labelMargin;
+      if (isHorizontalAxis) {
+        /* Since the axis is black, draw the graduation above it. */
+        verticalRelativePosition = AbstractPlotView::RelativePosition::Before;
+      }
+    } else {
+      // The ray is exiting through the top or the bottom.
+      x = std::copysign(yQuadrant * cos / sin, cos);
+      y = yQuadrant;
+      if (isVerticalAxis) {
+        // Move the label so it's not overridden by the vertical axis.
+        horizontalRelativePosition = AbstractPlotView::RelativePosition::After;
+      }
+    }
+    // TODO: update condition for non-orthonormal axes
+    if (x * x + y * y > minimumSquareDistanceToCenter) {
+      TryDrawLabel(plotView, ctx, rect, buffer, {x, y},
+                   horizontalRelativePosition, verticalRelativePosition,
+                   &lastDrawnLabelRect);
+      if (i == 0) {
+        // Also show the full-circle label below (360°/2π/400gon).
+        FormatAngleLabel({buffer, bufferSize}, k_numberOfGraduations,
+                         angleUnit);
+        TryDrawLabel(plotView, ctx, rect, buffer, {x, y + labelMargin},
+                     horizontalRelativePosition,
+                     AbstractPlotView::RelativePosition::After,
+                     &lastDrawnLabelRect);
+      }
+    }
+    /* TODO: don't print labels if the origin is off-screen and they end up on
+     * the other side */
+  }
+}
+
+// PlainAxis
+
+void PlainAxis::drawAxis(const AbstractPlotView* plotView, KDContext* ctx,
+                         KDRect rect, OMG::Axis axis) const {
+  assert(plotView);
+  plotView->drawStraightSegment(ctx, rect, axis, 0.f, -INFINITY, INFINITY,
+                                Escher::ColorPicker::Resolve(k_color));
+}
+
+// SimpleAxis
+
+void SimpleAxis::drawAxis(const AbstractPlotView* plotView, KDContext* ctx,
+                          KDRect rect, OMG::Axis axis) const {
+  assert(plotView);
+
+  // - Draw plain axis
+  PlainAxis::drawAxis(plotView, ctx, rect, axis);
+
+  // - Draw ticks and eventual labels
+  /* Do not draw ticks on the vertical axis if the axis itself is not visible,
+   * as they could be mistaken for minus signs. */
+  bool drawTicks =
+      !(axis == OMG::Axis::Vertical && plotView->range()->xMin() >= 0.f);
+  float tMax = plotView->rangeMax(axis) + plotView->pixelLength(axis);
+  /* maxNumberOfTicks is there to ensure that we do not draw too much ticks
+   * when reaching limit cases. For example, tMax = 1.0E+8 and tickStep = 0.5,
+   * when t == tMax, increasing it by tickStep will give:
+   *  t = tMax + tickStep, but tMax + tickStep == tMax because of float
+   * precision. Which means the condition t <= tMax in the loop will never be
+   * reached. */
+  int maxNumberOfTicks =
+      static_cast<int>(
+          std::ceil((tMax - plotView->rangeMin(axis)) /
+                    PoincareHelpers::ToFloat(tickStep(plotView, axis)))) +
+      1;
+  assert(maxNumberOfTicks >= 2);
+  for (size_t labelIndex = 0;
+       labelIndex <
+       std::min(static_cast<size_t>(maxNumberOfTicks), numberOfLabels());
+       labelIndex++) {
+    float t =
+        PoincareHelpers::ToFloat(tickPosition(labelIndex, plotView, axis));
+    if (t >= tMax) {
+      break;
+    }
+    if (drawTicks) {
+      plotView->drawTick(ctx, rect, axis, t,
+                         Escher::ColorPicker::Resolve(k_color));
+    }
+    drawLabel(labelIndex, t, plotView, ctx, rect, axis);
+  }
+}
+
+ExpressionOrFloat SimpleAxis::tickPosition(size_t labelIndex,
+                                           const AbstractPlotView* plotView,
+                                           OMG::Axis axis) const {
+  assert(labelIndex < numberOfLabels());
+  ExpressionOrFloat step = tickStep(plotView, axis);
+  float tMin = plotView->rangeMin(axis);
+  float approximateStep = PoincareHelpers::ToFloat(step);
+  assert(std::fabs(std::round(tMin / approximateStep)) <
+         static_cast<float>(INT_MAX));
+  int indexOfOrigin = static_cast<int>(std::floor(-tMin / approximateStep));
+  if (step.hasNoExactExpression()) {
+    return ExpressionOrFloat(
+        static_cast<float>(static_cast<int>(labelIndex) - indexOfOrigin) *
+        PoincareHelpers::ToFloat(step));
+  }
+  return ExpressionOrFloat::Builder(
+      UserExpression::Create(
+          KMult(KA, KB), {.KA = step.expression(),
+                          .KB = UserExpression::Builder(
+                              static_cast<int>(labelIndex) - indexOfOrigin)})
+          .cloneAndTrySimplify(
+              {.user = {.angleUnit = SharedGlobalPrefs().angleUnit()}}),
+      PoincareHelpers::ApproximateToRealScalar);
+}
+
+ExpressionOrFloat SimpleAxis::tickStep(const AbstractPlotView* plotView,
+                                       OMG::Axis axis) const {
+  ExpressionOrFloat step = axis == OMG::Axis::Horizontal
+                               ? plotView->range()->xGridUnit()
+                               : plotView->range()->yGridUnit();
+  if (step.hasNoExactExpression()) {
+    return ExpressionOrFloat(2.f * PoincareHelpers::ToFloat(step));
+  }
+  return ExpressionOrFloat::Builder(
+      UserExpression::Create(KMult(2_e, KA), {.KA = step.expression()})
+          .cloneAndTrySimplify(
+              {.user = {.angleUnit = SharedGlobalPrefs().angleUnit()}}),
+      PoincareHelpers::ApproximateToRealScalar);
+}
+
+// AbstractLabeledAxis
+
+void AbstractLabeledAxis::reloadAxis(AbstractPlotView* plotView,
+                                     OMG::Axis axis) {
+  size_t n = numberOfLabels();
+  m_lastDrawnRect = KDRectZero;
+  for (size_t labelIndex = 0; labelIndex < n; labelIndex++) {
+    computeLabel(labelIndex, plotView, axis);
+  }
+  computeLabelsRelativePosition(plotView, axis);
+}
+
+int AbstractLabeledAxis::computeLabel(size_t labelIndex,
+                                      const AbstractPlotView* plotView,
+                                      OMG::Axis axis) {
+  assert(labelIndex < numberOfLabels());
+  ExpressionOrFloat t = tickPosition(labelIndex, plotView, axis);
+  PrintFloat::TextLengths textLengths = t.writeText(
+      std::span<char>{mutableLabel(labelIndex), k_labelBufferMaxSize},
+      ExpressionOrFloat::ApproximationParameters{
+          SharedGlobalPrefs().angleUnit(), SharedGlobalPrefs().complexFormat()},
+      k_numberSignificantDigits, Preferences::PrintFloatMode::Decimal,
+      k_labelBufferMaxGlyphLength);
+  assert(strlen(mutableLabel(labelIndex)) == textLengths.CharLength);
+  return static_cast<int>(textLengths.GlyphLength);
+}
+
+bool AbstractLabeledAxis::labelWillBeDisplayed(size_t labelIndex,
+                                               KDRect rect) const {
+  assert(labelIndex < numberOfLabels());
+  return !rect.intersects(m_lastDrawnRect);
+}
+
+KDRect AbstractLabeledAxis::labelRect(size_t labelIndex, float t,
+                                      const AbstractPlotView* plotView,
+                                      OMG::Axis axis) const {
+  assert(labelIndex < numberOfLabels());
+  const char* text = label(labelIndex);
+  if (m_hidden || text[0] == '\0') {
+    return KDRectZero;
+  }
+
+  AbstractPlotView::RelativePosition xRelative, yRelative;
+  if (axis == OMG::Axis::Horizontal) {
+    if (t == 0.f && m_otherAxis) {
+      if (m_labelsPosition != 0.f) {
+        /* Do not draw a floating 0 label. */
+        return KDRectZero;
+      }
+      /* 0 must not be overlaid on the vertical axis. */
+      xRelative = AbstractPlotView::RelativePosition::Before;
+    } else {
+      xRelative = AbstractPlotView::RelativePosition::There;
+    }
+    yRelative = m_relativePosition;
+  } else {
+    if (t == 0.f && m_otherAxis) {
+      return KDRectZero;
+    }
+    xRelative = m_relativePosition;
+    yRelative = AbstractPlotView::RelativePosition::There;
+  }
+
+  Coordinate2D<float> xy = axis == OMG::Axis::Horizontal
+                               ? Coordinate2D<float>(t, m_labelsPosition)
+                               : Coordinate2D<float>(m_labelsPosition, t);
+  return plotView->labelRect(text, xy, xRelative, yRelative);
+}
+
+void AbstractLabeledAxis::drawLabel(size_t labelIndex, float t,
+                                    const AbstractPlotView* plotView,
+                                    KDContext* ctx, KDRect rect, OMG::Axis axis,
+                                    Escher::ThemeComponent color) const {
+  assert(labelIndex < numberOfLabels());
+  const char* text = label(labelIndex);
+  KDRect thisLabelRect = labelRect(labelIndex, t, plotView, axis);
+  if (thisLabelRect.intersects(rect) &&
+      labelWillBeDisplayed(labelIndex, thisLabelRect)) {
+    m_lastDrawnRect = thisLabelRect.paddedWith(AbstractPlotView::k_labelMargin);
+    plotView->drawLabel(ctx, rect, text, thisLabelRect, color);
+  }
+}
+
+void AbstractLabeledAxis::computeLabelsRelativePosition(
+    const AbstractPlotView* plotView, OMG::Axis axis) const {
+  m_labelsPosition = 0.f;
+
+  if (axis == OMG::Axis::Horizontal) {
+    float labelHeight = (KDFont::GlyphSize(AbstractPlotView::k_font).height() +
+                         AbstractPlotView::k_labelMargin) *
+                        plotView->pixelHeight();
+    float bannerHeight =
+        plotView->bannerView() && plotView->bannerOverlapsGraph()
+            ? plotView->bannerView()->bounds().height() *
+                  plotView->pixelHeight()
+            : 0.f;
+    float yMin = plotView->range()->yMin();
+    float yMax = plotView->range()->yMax();
+    if (yMin + bannerHeight > 0.f - labelHeight) {
+      m_relativePosition = AbstractPlotView::RelativePosition::Before;
+      m_labelsPosition = yMin + bannerHeight;
+    } else {
+      if (yMax < 0.f) {
+        m_labelsPosition = yMax;
+      }
+      m_relativePosition = AbstractPlotView::RelativePosition::After;
+    }
+  } else {
+    KDCoordinate labelsWidth = 0;
+    size_t n = numberOfLabels();
+    for (size_t labelIndex = 0; labelIndex < n; labelIndex++) {
+      KDCoordinate w = KDFont::Font(AbstractPlotView::k_font)
+                           ->stringSize(label(labelIndex))
+                           .width();
+      if (w > labelsWidth) {
+        labelsWidth = w;
+      }
+    }
+    float xMin = plotView->range()->xMin();
+    float xMax = plotView->range()->xMax();
+    if (xMin + labelsWidth * plotView->pixelWidth() > 0.f) {
+      m_relativePosition = AbstractPlotView::RelativePosition::After;
+      m_labelsPosition = std::max(xMin, 0.f);
+    } else {
+      if (xMax < 0.f) {
+        m_labelsPosition = xMax;
+      }
+      m_relativePosition = AbstractPlotView::RelativePosition::Before;
+    }
+  }
+}
+
+}  // namespace PlotPolicy
+}  // namespace Shared

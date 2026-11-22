@@ -1,0 +1,418 @@
+#include <assert.h>
+#include <omg/float.h>
+#include <omg/troolean.h>
+#include <omg/unreachable.h>
+#include <poincare/src/numeric_solver/erf_inv.h>
+#include <poincare/src/numeric_solver/solver_algorithms.h>
+#include <poincare/statistics/distribution.h>
+
+namespace Poincare::Distribution {
+using namespace Internal;
+using namespace NumericSolver;
+
+template <typename T>
+void findBoundsForBinarySearch(
+    LambdaEvaluator<T> cumulativeDistributionEvaluation, T& xmin, T& xmax) {
+  /* We'll simply test [0, 10], [10, 100], [100, 1000] ... until we find a
+   * working interval, or symmetrically if the zero is on the left. This
+   * obviously assumes that cumulativeDistributionEvaluation is an increasing
+   * function.*/
+  constexpr static int k_maxNumberOfIterations = 308;  // std::log10(DBL_MAX)
+
+  xmin = 0, xmax = 10;
+  T signOfRoot = cumulativeDistributionEvaluation(0) < 0 ? 1 : -1;
+  int iteration = 0;
+
+  // We check if xmax if after the root, and otherwise multiply it by 10
+  while (
+      (signOfRoot * cumulativeDistributionEvaluation(signOfRoot * xmax) < 0) &&
+      (iteration < k_maxNumberOfIterations)) {
+    xmin = xmax;
+    xmax *= 10;
+    iteration++;
+  }
+  // Enlarge interval to avoid bounds being too close to solution
+  xmax += 1;
+  xmin = std::max(static_cast<T>(0), xmin - 1);
+
+  assert(iteration != k_maxNumberOfIterations);
+
+  if (signOfRoot < 0) {
+    T temp = -xmin;
+    xmin = -xmax;
+    xmax = temp;
+  }
+}
+
+template <typename T>
+T binomialCumulativeDistributiveInverse(T probability,
+                                        const ParametersArray<T>& parameters) {
+  const T n = parameters[Params::Binomial::N];
+  const T p = parameters[Params::Binomial::P];
+  constexpr T precision = OMG::Float::Epsilon<T>();
+  bool nIsZero = std::abs(n) < precision;
+  bool pIsZero = std::abs(p) < precision;
+  bool pIsOne = !pIsZero && std::abs(p - static_cast<T>(1.0)) < precision;
+  if (nIsZero && (pIsZero || pIsOne)) {
+    return NAN;
+  }
+  if (std::abs(probability) < precision) {
+    if (pIsOne) {
+      return 0.;
+    }
+    return NAN;
+  }
+  if (std::abs(probability - static_cast<T>(1.0)) < precision) {
+    return n;
+  }
+  T proba = probability;
+  return SolverAlgorithms::CumulativeDistributiveInverseForNDefinedFunction<T>(
+      &proba, {
+                  [](T x, const void* auxiliary) {
+                    const ParametersArray<T> params =
+                        *static_cast<const ParametersArray<T>*>(auxiliary);
+                    return EvaluateAtAbscissa(Type::Binomial, x, params);
+                  },
+                  &parameters,
+              });
+}
+
+template <typename T>
+T chi2CumulativeDistributiveInverse(T probability,
+                                    const ParametersArray<T>& parameters) {
+  // Compute inverse using SolverAlgorithms::IncreasingFunctionRoot
+  if (probability > 1.0 - DBL_EPSILON) {
+    return INFINITY;
+  } else if (probability < DBL_EPSILON) {
+    return 0.;
+  }
+
+  const double k = static_cast<double>(parameters[Params::Chi2::K]);
+
+  struct Args {
+    T proba;
+    double k;
+  };
+  Args args{probability, k};
+
+  auto evaluation = [](double x, const void* auxiliary) {
+    const Args* args = static_cast<const Args*>(auxiliary);
+    return CumulativeDistributiveFunctionAtAbscissa<double>(
+               Type::Chi2, x, ParametersArray<double>({args->k})) -
+           args->proba;
+  };
+
+  double xmin, xmax;
+  findBoundsForBinarySearch({evaluation, &args}, xmin, xmax);
+
+  Coordinate2D<double> result = SolverAlgorithms::IncreasingFunctionRoot(
+      xmin, xmax, DBL_EPSILON, {evaluation, &args});
+  return static_cast<T>(result.x());
+}
+
+template <typename T>
+T exponentialCumulativeDistributiveInverse(T probability,
+                                           const ParametersArray<T>& params) {
+  const T lambda = params[Params::Exponential::Lambda];
+  return -std::log(1.0 - probability) / lambda;
+}
+
+template <typename T>
+T fisherCumulativeDistributiveInverse(T probability,
+                                      const ParametersArray<T>& params) {
+  const T d1 = params[Params::Fisher::D1];
+  const T d2 = params[Params::Fisher::D2];
+  ParametersArray<double> dbleParameters{};
+  dbleParameters[Params::Fisher::D1] = static_cast<double>(d1);
+  dbleParameters[Params::Fisher::D2] = static_cast<double>(d2);
+
+  const double p = static_cast<double>(probability);
+
+  if (p > 1.0 - DBL_EPSILON) {
+    return INFINITY;
+  }
+  if (p < DBL_EPSILON) {
+    return 0.;
+  }
+  double ax = DBL_EPSILON;
+  double bx = 100.0;  // Arbitrary value
+  struct Args {
+    const double proba;
+    ParametersArray<double> params;
+  };
+  Args args = {p, dbleParameters};
+  Coordinate2D<double> result = SolverAlgorithms::IncreasingFunctionRoot(
+      ax, bx, DBL_EPSILON,
+      {
+          [](double x, const void* auxiliary) {
+            const Args* args = static_cast<const Args*>(auxiliary);
+            // This needs to be an increasing function
+            return CumulativeDistributiveFunctionAtAbscissa(Type::Fisher, x,
+                                                            args->params) -
+                   args->proba;
+          },
+          &args,
+      });
+
+  /* Enter this condition if an unprecise result is found that is not at
+   * abscissa ax or bx.
+   * Ideally we would like to put this as an assertion, but sometimes we do get
+   * false positive: we replace them with the max x values possible (0 or
+   * infinity) to make the problem obvious to the student.
+   * EXAMPLE: Fisher law, d1=2, d2=2.2*10^-16, try to find P(X<=a) = 0.25
+   *
+   * TODO: Find a better way to display that no good solution could be found. */
+  if (!std::isnan(result.y()) && std::fabs(result.y()) > FLT_EPSILON &&
+      std::fabs(result.x() - ax) > FLT_EPSILON &&
+      std::fabs(result.x() - bx) > FLT_EPSILON) {
+    return p > 0.5 ? INFINITY : 0.;
+  }
+
+  return result.x();
+}
+
+template <typename T>
+T geometricCumulativeDistributiveInverse(T probability,
+                                         const ParametersArray<T>& params) {
+  constexpr T precision = OMG::Float::Epsilon<T>();
+  if (std::abs(probability) < precision) {
+    return NAN;
+  }
+  const T p = params[Params::Geometric::P];
+  if (std::abs(probability - static_cast<T>(1.0)) < precision) {
+    if (std::abs(p - static_cast<T>(1.0)) < precision) {
+      return static_cast<T>(1.0);
+    }
+    return INFINITY;
+  }
+  T proba = probability;
+  /* It works even if G(p) is defined on N* and not N because G(0) returns 0 and
+   * not undef */
+  return SolverAlgorithms::CumulativeDistributiveInverseForNDefinedFunction<T>(
+      &proba, {
+                  [](T x, const void* auxiliary) {
+                    const ParametersArray<T> params =
+                        *static_cast<const ParametersArray<T>*>(auxiliary);
+                    return EvaluateAtAbscissa(Type::Geometric, x, params);
+                  },
+                  &params,
+              });
+}
+
+template <typename T>
+T hypergeomCumulativeDistributiveInverse(T probability,
+                                         const ParametersArray<T>& parameters) {
+  const T N = parameters[Params::Hypergeometric::NPop];
+  const T K = parameters[Params::Hypergeometric::K];
+  const T n = parameters[Params::Hypergeometric::NSample];
+
+  constexpr T precision = OMG::Float::Epsilon<T>();
+  if (probability < precision) {
+    // We can have 0 successes only if there are enough failures
+    if (n > N - K) {
+      return 0.;
+    }
+    return NAN;
+  }
+  if (1.0 - probability < precision) {
+    return std::min(n, K);
+  }
+  T proba = probability;
+  return SolverAlgorithms::CumulativeDistributiveInverseForNDefinedFunction<T>(
+      &proba, {
+                  [](T x, const void* auxiliary) {
+                    const ParametersArray<T> params =
+                        *static_cast<const ParametersArray<T>*>(auxiliary);
+                    return EvaluateAtAbscissa(Type::Hypergeometric, x, params);
+                  },
+                  &parameters,
+              });
+}
+
+template <typename T>
+static T standardNormalCumulativeDistributiveInverse(T probability) {
+  if (probability > static_cast<T>(1.0) || probability < static_cast<T>(0.0) ||
+      !std::isfinite(probability)) {
+    return NAN;
+  }
+  constexpr T precision = OMG::Float::Epsilon<T>();
+  if ((static_cast<T>(1.0)) - probability < precision) {
+    return INFINITY;
+  }
+  if (probability < precision) {
+    return -INFINITY;
+  }
+  if (probability < static_cast<T>(0.5)) {
+    return -standardNormalCumulativeDistributiveInverse((static_cast<T>(1.0)) -
+                                                        probability);
+  }
+  return static_cast<T>(M_SQRT2) *
+         erfInv((static_cast<T>(2.0)) * probability - static_cast<T>(1.0));
+}
+
+template <typename T>
+T normalCumulativeDistributiveInverse(T probability,
+                                      const ParametersArray<T>& params) {
+  const T mu = params[Params::Normal::Mu];
+  const T sigma = params[Params::Normal::Sigma];
+  return standardNormalCumulativeDistributiveInverse(probability) *
+             std::fabs(sigma) +
+         mu;
+}
+
+template <typename T>
+T poissonCumulativeDistributiveInverse(T probability,
+                                       const ParametersArray<T>& parameters) {
+  constexpr T precision = OMG::Float::Epsilon<T>();
+  if (std::abs(probability) < precision) {
+    return NAN;
+  }
+  if (std::abs(probability - static_cast<T>(1.0)) < precision) {
+    return INFINITY;
+  }
+  T proba = probability;
+  return SolverAlgorithms::CumulativeDistributiveInverseForNDefinedFunction<T>(
+      &proba, {
+                  [](T x, const void* auxiliary) {
+                    const ParametersArray<T> params =
+                        *static_cast<const ParametersArray<T>*>(auxiliary);
+                    return EvaluateAtAbscissa(Type::Poisson, x, params);
+                  },
+                  &parameters,
+              });
+}
+
+template <typename T>
+T studentCumulativeDistributiveInverse(T probability,
+                                       const ParametersArray<T>& params) {
+  if (probability == 0.5) {
+    return static_cast<T>(0.0);
+  } else if (probability > 1.0 - DBL_EPSILON) {
+    return INFINITY;
+  } else if (probability < DBL_EPSILON) {
+    return -INFINITY;
+  }
+  const T k = params[Params::Student::K];
+  struct Args {
+    T proba;
+    T k;
+  };
+  Args args{probability, k};
+  auto evaluation = [](double x, const void* auxiliary) {
+    const Args* args = static_cast<const Args*>(auxiliary);
+    return static_cast<double>(
+        CumulativeDistributiveFunctionAtAbscissa<T>(
+            Type::Student, x, ParametersArray<T>({args->k})) -
+        args->proba);
+  };
+
+  double xmin, xmax;
+  findBoundsForBinarySearch({evaluation, &args}, xmin, xmax);
+  assert((xmin < xmax) && std::isfinite(xmin) && std::isfinite(xmax));
+
+  // Compute inverse using SolverAlgorithms::IncreasingFunctionRoot
+  Coordinate2D<double> result = SolverAlgorithms::IncreasingFunctionRoot(
+      xmin, xmax, DBL_EPSILON, {evaluation, &args});
+  return result.x();
+}
+
+template <typename T>
+T uniformCumulativeDistributiveInverse(T probability,
+                                       const ParametersArray<T>& params) {
+  const T a = params[Params::Uniform::A];
+  const T b = params[Params::Uniform::B];
+  if (probability >= static_cast<T>(1.)) {
+    return b;
+  }
+  if (probability <= static_cast<T>(0.)) {
+    return a;
+  }
+  return a * (1 - probability) + probability * b;
+}
+
+template <typename T>
+T CumulativeDistributiveInverseForProbability(
+    Type type, T probability, const ParametersArray<T>& parameters) {
+  if (AreParametersValid(type, parameters) != OMG::Troolean::True ||
+      std::isnan(probability) || probability < static_cast<T>(0.0) ||
+      probability > static_cast<T>(1.0)) {
+    return NAN;
+  }
+  switch (type) {
+    case Type::Binomial:
+      return binomialCumulativeDistributiveInverse(probability, parameters);
+    case Type::Uniform:
+      return uniformCumulativeDistributiveInverse(probability, parameters);
+    case Type::Exponential:
+      return exponentialCumulativeDistributiveInverse(probability, parameters);
+    case Type::Normal:
+      return normalCumulativeDistributiveInverse(probability, parameters);
+    case Type::Chi2:
+      return chi2CumulativeDistributiveInverse(probability, parameters);
+    case Type::Student:
+      return studentCumulativeDistributiveInverse(probability, parameters);
+    case Type::Geometric:
+      return geometricCumulativeDistributiveInverse(probability, parameters);
+    case Type::Hypergeometric:
+      return hypergeomCumulativeDistributiveInverse(probability, parameters);
+    case Type::Poisson:
+      return poissonCumulativeDistributiveInverse(probability, parameters);
+    case Type::Fisher:
+      return fisherCumulativeDistributiveInverse(probability, parameters);
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+template <typename T>
+T CumulativeRightDistributiveInverseForProbability(
+    Type type, T p, const ParametersArray<T>& parameters) {
+  // Find smallest [a] such that P(X≤a) ≥ 1-p
+  T a =
+      CumulativeDistributiveInverseForProbability<T>(type, 1.0 - p, parameters);
+  if (!std::isfinite(a)) {
+    return a;
+  }
+  if (IsContinuous(type)) {
+    // P(X<a) = P(X≤a) = 1-p, therefore P(X≥a) = p
+    // TODO: This assert doesn't hold when p is too small due to precision loss
+    assert(p < 0.05 || 1.0 - p < 0.05 ||
+           OMG::Float::RoughlyEqual<double>(
+               CumulativeDistributiveFunctionAtAbscissa<T>(type, a, parameters),
+               1.0 - p, FLT_EPSILON));
+    return a;
+  }
+  // P(X≤a) ≥ 1-p
+  assert(CumulativeDistributiveFunctionAtAbscissa<T>(type, a, parameters) >=
+         1.0 - p);
+  // [a] is an integer
+  assert(std::round(a) == a);
+  // P(X≤a-1) < 1-p since [a] is the smallest solution
+  // Note: Asserting P(X≤a-1) ≤ 1-p because of evaluation errors
+  assert(std::isnan(CumulativeDistributiveFunctionAtAbscissa<T>(type, a - 1.0,
+                                                                parameters)) ||
+         a <= 0.0 ||
+         CumulativeDistributiveFunctionAtAbscissa<T>(type, a - 1.0,
+                                                     parameters) <= 1.0 - p);
+  // P(X≤a-1) < 1-p therefore P(X≥a) ≥ p
+  if (OMG::Float::RoughlyEqual<double>(
+          CumulativeDistributiveFunctionAtAbscissa<T>(type, a, parameters),
+          1.0 - p, FLT_EPSILON)) {
+    // P(X≤a) = 1-p, therefore P(X≥a+1) = p, [a+1] is the biggest solution
+    return a + 1.0;
+  }
+  // P(X≤a) > 1-p therefore P(X≥a+1) < p, [a] is the biggest solution
+  return a;
+}
+
+template float CumulativeDistributiveInverseForProbability(
+    Type, float, const ParametersArray<float>&);
+template double CumulativeDistributiveInverseForProbability(
+    Type, double, const ParametersArray<double>&);
+
+template float CumulativeRightDistributiveInverseForProbability(
+    Type, float, const ParametersArray<float>&);
+template double CumulativeRightDistributiveInverseForProbability(
+    Type, double, const ParametersArray<double>&);
+
+}  // namespace Poincare::Distribution

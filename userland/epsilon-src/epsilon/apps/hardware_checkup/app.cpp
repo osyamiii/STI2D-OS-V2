@@ -1,0 +1,49 @@
+#include "app.h"
+
+#include <apps/apps_container.h>
+#include <ion/circuit_breaker.h>
+#include <ion/events.h>
+
+using namespace Escher;
+
+namespace HardwareCheckup {
+
+App* App::Snapshot::unpack(Container* container) {
+  return new (container->currentAppBuffer()) App(this);
+}
+
+constexpr static App::Descriptor sDescriptor;
+
+const App::Descriptor* App::Snapshot::descriptor() const {
+  return &sDescriptor;
+}
+
+App::App(Snapshot* snapshot)
+    : ::App(snapshot, &m_wizardViewController),
+      m_wizardViewController(&m_modalViewController) {}
+
+App::WizardViewController::WizardViewController(Responder* parentResponder)
+    : BankViewController(parentResponder),
+      m_standbyController(this),
+      m_storageViewerController(this),
+      m_clearanceViewerController(this),
+      m_batteryViewerController(this) {}
+
+ViewController* App::WizardViewController::childAtIndex(int i) {
+  ViewController* children[] = {
+      &m_storageViewerController, &m_clearanceViewerController,
+      &m_standbyController, &m_batteryViewerController};
+  return children[i];
+}
+
+bool App::WizardViewController::handleEvent(Ion::Events::Event event) {
+  if (event == Ion::Events::Right || event == Ion::Events::Left) {
+    setActiveIndex((activeIndex() + numberOfChildren() +
+                    (event == Ion::Events::Right ? 1 : -1)) %
+                   numberOfChildren());
+    return true;
+  }
+  return false;
+}
+
+}  // namespace HardwareCheckup

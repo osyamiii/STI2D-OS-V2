@@ -1,0 +1,52 @@
+#include <escher/metric.h>
+#include <escher/stack_header_view.h>
+#include <escher/theme/color_picker.h>
+#include <escher/view_controller.h>
+extern "C" {
+#include <assert.h>
+}
+
+namespace Escher {
+
+StackHeaderView::StackHeaderView(const ViewController* controller,
+                                 ThemeComponent textColor,
+                                 ThemeComponent backgroundColor,
+                                 ThemeComponent separatorColor,
+                                 ThemeComponent borderColor)
+    : View(),
+      m_textColor(textColor),
+      m_backgroundColor(backgroundColor),
+      m_separatorColor(separatorColor),
+      m_borderColor(borderColor),
+      m_controller(controller) {
+  markWholeFrameAsDirty();
+}
+
+void StackHeaderView::drawRect(KDContext* ctx, KDRect rect) const {
+  KDRect b = bounds();
+  DrawInnerBorderOfRect(
+      ctx, b, k_separatorThickness, ColorPicker::Resolve(m_borderColor),
+      Mask{.top = false, .right = true, .bottom = false, .left = true});
+  DrawInnerBorderOfRect(
+      ctx, b, k_separatorThickness, ColorPicker::Resolve(m_separatorColor),
+      Mask{.top = true, .right = false, .bottom = true, .left = false});
+  DrawInnerRect(ctx, b, m_backgroundColor);
+  // Write title
+  ctx->alignAndDrawString(
+      m_controller->title(), KDPointZero, bounds().size(),
+      {.style = {.glyphColor = ColorPicker::Resolve(m_textColor),
+                 .backgroundColor = ColorPicker::Resolve(m_backgroundColor),
+                 .font = k_font},
+       .horizontalAlignment = KDGlyph::k_alignCenter});
+}
+
+#if ESCHER_VIEW_LOGGING
+const char* StackHeaderView::className() const { return "StackViewHeader"; }
+
+void StackHeaderView::logAttributes(std::ostream& os) const {
+  View::logAttributes(os);
+  os << " name=\"" << m_controller->title() << "\"";
+}
+#endif
+
+}  // namespace Escher

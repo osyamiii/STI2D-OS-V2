@@ -1,0 +1,66 @@
+#pragma once
+
+#include <apps/i18n.h>
+#include <escher/alternate_empty_view_delegate.h>
+#include <escher/alternate_view_controller.h>
+#include <escher/menu_cell.h>
+#include <escher/message_text_view.h>
+#include <escher/responder.h>
+#include <escher/selectable_list_view_controller.h>
+#include <escher/stack_view_controller.h>
+#include <escher/tab_view_controller.h>
+#include <escher/transparent_themed_image_view.h>
+
+#include "../store.h"
+#include "graph_view_model.h"
+
+namespace Statistics {
+
+using GraphTypeCell = Escher::MenuCell<Escher::TransparentThemedImageView,
+                                       Escher::MessageTextView>;
+
+class GraphTypeController
+    : public Escher::AlternateEmptyViewDelegate,
+      public Escher::AlternateViewDelegate,
+      public Escher::UniformSelectableListController<GraphTypeCell, 4> {
+ public:
+  GraphTypeController(Escher::Responder* parentResponder,
+                      Escher::TabViewController* tabController,
+                      Escher::StackViewController* stackView, Store* store,
+                      GraphViewModel* graphViewModel);
+
+  // AlternateEmptyViewDelegate (showing graph selection menu or empty)
+  bool isEmpty() const override { return !m_store->hasActiveSeries(); }
+  I18n::Message emptyMessage() const override {
+    return I18n::Message::NoDataToPlot;
+  }
+  Escher::Responder* responderWhenEmpty() override;
+
+  // AlternateViewDelegate (which graphView is shown)
+  int activeViewControllerIndex() const override {
+    return GraphViewModel::IndexOfGraphView(
+        m_graphViewModel->selectedGraphView());
+  }
+  Escher::ViewController::TitlesDisplay alternateViewTitlesDisplay() override {
+    return Escher::ViewController::TitlesDisplay::NeverDisplayOwnTitle;
+  }
+  void activeViewDidBecomeFirstResponder(
+      Escher::ViewController* activeViewController) override;
+
+  // UniformSelectableListController
+  bool handleEvent(Ion::Events::Event event) override;
+  const char* title() const override {
+    return I18n::translate(I18n::Message::Type);
+  }
+
+ protected:
+  void handleResponderChainEvent(ResponderChainEvent event) override;
+
+ private:
+  Escher::TabViewController* m_tabController;
+  Escher::StackViewController* m_stackViewController;
+  Store* m_store;
+  GraphViewModel* m_graphViewModel;
+};
+
+}  // namespace Statistics

@@ -1,0 +1,39 @@
+name: Linter
+on:
+  pull_request:
+    paths:
+      - '**.cpp'
+      - '**.c'
+      - '**.h'
+      - '**.py'
+      - '**.js'
+      - '**.cjs'
+      - '**.mjs'
+      - '**.ts'
+      - '**.mak'
+      - '**/Makefile'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch target branch and PR branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 200
+      - name: Find most recent ancestor of PR and target branch
+        id: common_ancestor
+        run: echo "commit_sha=$(git merge-base ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})" >> $GITHUB_OUTPUT
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+
+      - name: Lint files changed by PR
+        run: $DOCKER_RUN "make format BASE=${{ steps.common_ancestor.outputs.commit_sha }} CXXFORMATARGS=\"--dry-run --Werror\" PYFORMATARGS=\"--check\" JSFORMATARGS=\"--check\" MAKFORMATARGS=\"--check\""

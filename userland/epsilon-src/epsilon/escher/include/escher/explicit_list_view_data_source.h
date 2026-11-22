@@ -1,0 +1,42 @@
+#pragma once
+
+#include <escher/highlight_cell.h>
+#include <escher/list_view_data_source.h>
+#include <escher/table_size_1D_manager.h>
+
+namespace Escher {
+
+/* This class is a ListViewDataSource where each cell has its own type. It
+ * basically means that the reusableCell mechanism is erased which results in
+ * easier manipulation of heterogeneous cells but should not be used in list
+ * with a long or dynamic cell count. */
+class ExplicitListViewDataSource : public ListViewDataSource {
+ public:
+  ExplicitListViewDataSource() : ListViewDataSource() {}
+
+  int typeAtRow(int row) const override final { return row; }
+  int reusableCellCount(int type) const override final { return 1; }
+
+  // TODO: reusableCell should have a const and a non-const version
+  HighlightCell* reusableCell(int index, int type) override final {
+    return cell(type);
+  }
+  /* Cells are not reusable: they are filled only directly in constructor and
+   * viewWillAppear or other methods than can modify them like handleEvent. */
+  void fillCellForRow(Escher::HighlightCell* cell, int row) override final {}
+
+  void initWidth(TableView* tableView) override;
+
+ protected:
+  virtual const HighlightCell* cell(int row) const = 0;
+  virtual HighlightCell* cell(int row) {
+    return const_cast<HighlightCell*>(
+        const_cast<const ExplicitListViewDataSource*>(this)->cell(row));
+  }
+  KDCoordinate nonMemoizedRowHeight(int row) override final;
+
+ private:
+  bool canSelectCellAtRow(int row) override;
+};
+
+}  // namespace Escher

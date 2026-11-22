@@ -1,0 +1,69 @@
+#include "input_homogeneity_table.h"
+
+#include <poincare/print.h>
+#include <shared/column_parameter_controller.h>
+
+#include "homogeneity_data_source.h"
+#include "inference/controllers/chi_square/input_homogeneity_controller.h"
+
+using namespace Escher;
+
+namespace Inference {
+
+InputHomogeneityTable::InputHomogeneityTable(
+    Escher::Responder* parentResponder, HomogeneityTest* test,
+    InputHomogeneityController* inputHomogeneityController,
+    Escher::ScrollViewDelegate* scrollViewDelegate)
+    : InputCategoricalTableCell(parentResponder, this, test,
+                                scrollViewDelegate),
+      m_inputHomogeneityController(inputHomogeneityController) {}
+
+void InputHomogeneityTable::handleResponderChainEvent(
+    Responder::ResponderChainEvent event) {
+  if (event.type == ResponderChainEventType::HasBecomeFirst) {
+    if (selectedRow() < 0) {
+      selectColumn(1);
+    }
+    CategoricalTableCell::handleResponderChainEvent(event);
+  } else {
+    CategoricalTableCell::handleResponderChainEvent(event);
+  }
+}
+
+void InputHomogeneityTable::fillCellForLocation(Escher::HighlightCell* cell,
+                                                int column, int row) {
+  HomogeneityTableDataSource::fillCellForLocation(cell, column, row);
+  if ((column == 0 && row != 0 && row == numberOfRows() - 1 &&
+       row < k_maxNumberOfRows) ||
+      (row == 0 && column != 0 && column == numberOfColumns() - 1 &&
+       column < k_maxNumberOfColumns)) {
+    /* The last column/row is empty and has its title grayed out. */
+    static_cast<InferenceEvenOddBufferCell*>(cell)->setTextColor(
+        ThemeComponent::TextDeactivated);
+  }
+}
+
+size_t InputHomogeneityTable::fillColumnName(int column, char* buffer) {
+  return Poincare::Print::CustomPrintf(
+      buffer, Shared::ColumnParameterController::k_titleBufferSize, "%s %i",
+      I18n::translate(I18n::Message::Group), column);
+}
+
+void InputHomogeneityTable::fillInnerCellForLocation(
+    Escher::HighlightCell* cell, int column, int row) {
+  InferenceEvenOddEditableCell* myCell =
+      static_cast<InferenceEvenOddEditableCell*>(cell);
+  fillValueCellForLocation(myCell->editableTextCell()->textField(), myCell,
+                           column, row, tableModel());
+}
+
+CategoricalController* InputHomogeneityTable::categoricalController() {
+  return m_inputHomogeneityController;
+}
+
+void InputHomogeneityTable::initInnerCell(InferenceEvenOddEditableCell* cell) {
+  cell->setParentResponder(&m_selectableTableView);
+  cell->editableTextCell()->textField()->setDelegate(this);
+}
+
+}  // namespace Inference

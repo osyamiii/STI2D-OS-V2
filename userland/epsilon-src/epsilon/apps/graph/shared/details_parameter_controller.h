@@ -1,0 +1,87 @@
+#pragma once
+
+#include <apps/shared/continuous_function.h>
+#include <escher/buffer_text_view.h>
+#include <escher/menu_cell.h>
+#include <escher/selectable_list_view_controller.h>
+#include <escher/selectable_table_view.h>
+#include <escher/stack_view_controller.h>
+#include <escher/view_controller.h>
+#include <ion/storage/file_system.h>
+#include <omg/expiring_pointer.h>
+#include <poincare/function_properties/conic.h>
+
+namespace Graph {
+
+using DetailCell =
+    Escher::MenuCell<Escher::MessageTextView, Escher::MessageTextView,
+                     Escher::OneLineBufferTextView<KDFont::Size::Large>>;
+
+class DetailsParameterController
+    : public Escher::SelectableListViewController<
+          Escher::StandardMemoizedListViewDataSource>,
+      public Escher::SelectableListViewDelegate {
+ public:
+  DetailsParameterController(Escher::Responder* parentResponder);
+
+  bool handleEvent(Ion::Events::Event event) override;
+
+  // ViewController
+  const char* title() const override;
+  TitlesDisplay titlesDisplay() const override {
+    return TitlesDisplay::DisplayLastThreeTitles;
+  }
+  void viewWillAppear() override;
+
+  // MemoizedListViewDataSource
+  int numberOfRows() const override { return 1 + detailsNumberOfSections(); }
+  KDCoordinate nonMemoizedRowHeight(int row) override;
+  void fillCellForRow(Escher::HighlightCell* cell, int row) override;
+  DetailCell* reusableCell(int index, int type) override;
+  int reusableCellCount(int type) const override {
+    return k_numberOfDataPoints;
+  }
+  int typeAtRow(int row) const override { return 0; }
+  bool canStoreCellAtRow(int row) const override {
+    return row != k_indexOfCurveTypeRow;
+  }
+
+  // Number of sections to display in the ContinuousFunction's detail menu
+  int detailsNumberOfSections() const;
+  void setRecord(Ion::Storage::Record record);
+
+ private:
+  constexpr static int k_indexOfCurveTypeRow = 0;
+  constexpr static size_t k_lineDetailsSections = 3;
+  constexpr static size_t k_circleDetailsSections = 3;
+  constexpr static size_t k_ellipseDetailsSections = 6;
+  constexpr static size_t k_parabolaDetailsSections = 3;
+  constexpr static size_t k_hyperbolaDetailsSections = 6;
+  constexpr static int k_numberOfDataPoints = 7;  // max + 1 for plot type
+  // Return record's Continuous Function pointer
+  OMG::ExpiringPointer<const Shared::ContinuousFunction> function() const;
+  bool isNonVerticalLineEquation() const {
+    return function()->properties().isLineEquation() &&
+           !function()->properties().isAlongY();
+  }
+  // Title of given section in ContinuousFunction's detail menu
+  I18n::Message detailsTitle(int i) const;
+  // Description of given section in ContinuousFunction's detail menu
+  I18n::Message detailsDescription(int i) const;
+  // Value of given section in ContinuousFunction's detail menu
+  double detailsValue(int i) const {
+    assert(i < detailsNumberOfSections());
+    return m_detailValues[i];
+  }
+  // Set the detail values for a line
+  void setLineDetailsValues(double slope, double intercept);
+  // Set the detail values for a conic
+  void setConicDetailsValues(const Poincare::CartesianConic& conic);
+
+  Escher::StackViewController* stackController() const;
+  DetailCell m_cells[k_numberOfDataPoints];
+  double m_detailValues[k_numberOfDataPoints - 1];
+  Ion::Storage::Record m_record;
+};
+
+}  // namespace Graph

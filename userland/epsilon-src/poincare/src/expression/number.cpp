@@ -1,0 +1,125 @@
+#include "number.h"
+
+#include <poincare/sign.h>
+
+#include <cmath>
+
+#include "approximation.h"
+#include "float_helper.h"
+#include "k_tree.h"
+#include "rational.h"
+
+namespace Poincare::Internal {
+
+template <typename T>
+T Number::To(const Tree* e) {
+  assert(e->isNumber());
+  if (e->isRational()) {
+    return Rational::To<T>(e);
+  }
+  switch (e->type()) {
+    case Type::Pi:
+      return M_PI;
+    case Type::EulerE:
+      return M_E;
+    case Type::SingleFloat:
+      return FloatHelper::FloatTo(e);
+    case Type::DoubleFloat:
+      return FloatHelper::DoubleTo(e);
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+bool Number::IsNull(const Tree* e) {
+  if (!e->isFloat()) {
+    return e->isZero();
+  }
+  return Approximation::To<double>(
+             e, Approximation::Parameters{.policy = {.optimize = true}}) == 0.0;
+}
+
+bool Number::IsOne(const Tree* e) {
+  return e->isOne() || e->treeIsIdenticalTo(1_fe) || e->treeIsIdenticalTo(1_de);
+}
+
+Tree* Number::Addition(const Tree* e1, const Tree* e2) {
+  if (e1->isDoubleFloat() || e2->isDoubleFloat()) {
+    return SharedTreeStack->pushDoubleFloat(
+        Approximation::To<double>(
+            e1, Approximation::Parameters{.policy = {.optimize = true}}) +
+        Approximation::To<double>(
+            e2, Approximation::Parameters{.policy = {.optimize = true}}));
+  }
+  if (e1->isSingleFloat() || e2->isSingleFloat()) {
+    return SharedTreeStack->pushFloat(
+        Approximation::To<SmallerFloat>(
+            e1, Approximation::Parameters{.policy = {.optimize = true}}) +
+        Approximation::To<SmallerFloat>(
+            e2, Approximation::Parameters{.policy = {.optimize = true}}));
+  }
+  assert(!e1->isMathematicalConstant() && !e2->isMathematicalConstant());
+  Tree* result = Rational::Addition(e1, e2);
+  return result;
+}
+Tree* Number::Multiplication(const Tree* e1, const Tree* e2) {
+  if (e1->isDoubleFloat() || e2->isDoubleFloat()) {
+    // TODO: approximate the Tree to be consistent with enhanced float *
+    return SharedTreeStack->pushDoubleFloat(
+        Approximation::To<double>(
+            e1, Approximation::Parameters{.policy = {.optimize = true}}) *
+        Approximation::To<double>(
+            e2, Approximation::Parameters{.policy = {.optimize = true}}));
+  }
+  if (e1->isSingleFloat() || e2->isSingleFloat()) {
+    return SharedTreeStack->pushFloat(
+        Approximation::To<SmallerFloat>(
+            e1, Approximation::Parameters{.policy = {.optimize = true}}) *
+        Approximation::To<SmallerFloat>(
+            e2, Approximation::Parameters{.policy = {.optimize = true}}));
+  }
+  assert(!e1->isMathematicalConstant() && !e2->isMathematicalConstant());
+  Tree* result = Rational::Multiplication(e1, e2);
+  return result;
+}
+
+Properties Number::Properties(const Tree* e) {
+  assert(e->isNumber());
+  switch (e->type()) {
+    case Type::Pi:
+    case Type::EulerE:
+      return Properties::FiniteStrictlyPositive();
+    case Type::DoubleFloat:
+    case Type::SingleFloat: {
+      double value = FloatHelper::To(e);
+      if (std::isnan(value)) {
+        return Properties::Unknown();
+      }
+      // Floats are not considered integer since they may have been rounded
+      // A zero float is not considered to be a strict zero
+      return Poincare::Properties(
+          Poincare::Sign(value == 0., value >= 0., value <= 0.), true,
+          std::isinf(value));
+    }
+    default:
+      assert(e->isRational());
+      return Rational::Properties(e);
+  }
+}
+
+bool Number::SetSign(Tree* e, NonStrictSign sign) {
+  assert(e->isNumber());
+  if (e->isRational()) {
+    return Rational::SetSign(e, sign);
+  } else if (e->isFloat()) {
+    return FloatHelper::SetSign(e, sign);
+  }
+  assert(Number::Sign(e).isNull() ||
+         Number::Sign(e).isPositive() == (sign == NonStrictSign::Positive));
+  return false;
+}
+
+template float Number::To<float>(const Tree* e);
+template double Number::To<double>(const Tree* e);
+
+}  // namespace Poincare::Internal

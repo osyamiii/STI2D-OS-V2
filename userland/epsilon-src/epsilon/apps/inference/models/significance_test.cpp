@@ -1,0 +1,223 @@
+#include "significance_test.h"
+
+#include <apps/apps_container_helper.h>
+#include <assert.h>
+#include <float.h>
+#include <inference/app.h>
+#include <poincare/layout.h>
+#include <poincare/print.h>
+
+#include <algorithm>
+#include <cmath>
+
+#include "aliases.h"
+
+namespace Inference {
+
+void SignificanceTest::setGraphTitle(char* buffer, size_t bufferSize) const {
+  Poincare::Print::CustomPrintf(
+      buffer, bufferSize, "%s=%*.*ed %s=%*.*ed", criticalValueSymbol(),
+      testCriticalValue(), Poincare::Preferences::PrintFloatMode::Decimal,
+      Poincare::Preferences::ShortNumberOfSignificantDigits,
+      I18n::translate(I18n::Message::PValue), pValue(),
+      Poincare::Preferences::PrintFloatMode::Decimal,
+      Poincare::Preferences::ShortNumberOfSignificantDigits);
+}
+
+constexpr static int k_maxNumberOfGlyphs =
+    Escher::Metric::MaxNumberOfSmallGlyphsInDisplayWidth;
+
+SignificanceTest::DescriptionBuffer SignificanceTest::h0Description() const {
+  if (testType() == TestType::ANOVA) {
+    return DescriptionBuffer{"μi=μj"};
+  }
+  DescriptionBuffer buffer;
+  // <first symbol>=<firstParam>
+  Poincare::Print::CustomPrintfWithMaxNumberOfGlyphs(
+      buffer.data(), buffer.size(), k_hypothesisValueSignificantDigits,
+      k_maxNumberOfGlyphs, "%s=%*.*ed", hypothesisSymbol(), hypothesisValue(),
+      Poincare::Preferences::PrintFloatMode::Decimal);
+  return buffer;
+}
+
+SignificanceTest::DescriptionBuffer SignificanceTest::hADescription() const {
+  if (testType() == TestType::ANOVA) {
+    return DescriptionBuffer{"μi≠μj"};
+  }
+  DescriptionBuffer buffer;
+  // <first symbol><operator symbol><firstParams>
+  Poincare::Print::CustomPrintfWithMaxNumberOfGlyphs(
+      buffer.data(), buffer.size(), k_hypothesisValueSignificantDigits,
+      k_maxNumberOfGlyphs, "%s%s%*.*ed", hypothesisSymbol(),
+      alternativeHypothesisOperator(), hypothesisValue(),
+      Poincare::Preferences::PrintFloatMode::Decimal);
+  return buffer;
+}
+
+SignificanceTest::DescriptionBuffer
+SignificanceTest::thresholdValueDescription() const {
+  DescriptionBuffer buffer;
+  Poincare::Print::CustomPrintfWithMaxNumberOfGlyphs(
+      buffer.data(), buffer.size(), k_hypothesisValueSignificantDigits,
+      k_maxNumberOfGlyphs, "%*.*ed", threshold(),
+      Poincare::Preferences::PrintFloatMode::Decimal);
+  return buffer;
+}
+
+void SignificanceTest::initParameters() {
+  m_hypothesis =
+      Poincare::Inference::SignificanceTest::DefaultHypothesis(testType());
+  for (int i = 0; i < numberOfTestParameters(); i++) {
+    parametersArray()[i] =
+        Poincare::Inference::SignificanceTest::DefaultParameterAtIndex(type(),
+                                                                       i);
+  }
+  m_threshold = Poincare::Inference::SignificanceTest::DefaultThreshold();
+}
+
+bool SignificanceTest::canRejectNull() {
+  assert(m_threshold >= 0 && m_threshold <= 1);
+  return pValue() <= m_threshold;
+}
+
+double SignificanceTest::thresholdAbscissa(Poincare::Comparison::Operator op,
+                                           double factor) const {
+  assert(op != Poincare::Comparison::Operator::NotEqual);
+  double t = factor * threshold();
+  return cumulativeDistributiveInverseForProbability(
+      op == Poincare::Comparison::Operator::Inferior ? t : 1.0 - t);
+}
+
+void SignificanceTest::inferenceResultAtIndex(int index, double* value,
+                                              Poincare::Layout* message,
+                                              I18n::Message* subMessage,
+                                              int* precision) {
+  if (index < numberOfEstimates()) {
+    *value = estimateValue(index);
+    *message = estimateLayout(index);
+    *subMessage = estimateDescription(index);
+    return;
+  }
+  index -= numberOfEstimates();
+  switch (index) {
+    case ResultOrder::Z:
+      *value = testCriticalValue();
+      *message = criticalValueLayout();
+      *subMessage = I18n::Message::TestStatistic;
+      break;
+    case ResultOrder::PValue:
+      *value = pValue();
+      *message =
+          Poincare::Layout::String(I18n::translate(I18n::Message::PValue));
+      *subMessage = I18n::Message::Default;
+      break;
+    default:
+      assert(index == ResultOrder::TestDegree);
+      *value = degreeOfFreedom();
+      *message = Poincare::Layout::String(
+          I18n::translate(I18n::Message::DegreesOfFreedom));
+      *subMessage = I18n::Message::Default;
+      /* We reduce the precision since "Degrees of freedom" might not fit in
+       * all languages with 7 significant digits. */
+      *precision = Poincare::Preferences::MediumNumberOfSignificantDigits;
+  }
+}
+
+void SignificanceTest::compute() {
+  const Poincare::Inference::ParametersArray params = constParametersArray();
+  Poincare::Inference::Type type = this->type();
+  Poincare::Inference::SignificanceTest::Results results =
+      Poincare::Inference::SignificanceTest::Compute(type, m_hypothesis,
+                                                     params);
+  m_degreesOfFreedom = results.degreesOfFreedom;
+  m_testCriticalValue = results.criticalValue;
+  m_pValue = results.pValue;
+  m_estimates = results.estimates;
+}
+
+static float interpolate(float a, float b, float alpha) {
+  return alpha * (b - a) + a;
+}
+
+bool SignificanceTest::hasTwoSides() {
+  return m_hypothesis.m_alternative == Poincare::Comparison::Operator::NotEqual;
+}
+
+bool SignificanceTest::shouldForbidZoom(float alpha, float criticalValue) {
+  /* This method only applies on standardardized normal distribution,
+   * otherwise the method needs to be overridden. */
+  // Alpha or criticalValue is out of the view or their signs differ
+  return std::abs(alpha) > k_displayWidthToSTDRatio ||
+         std::abs(criticalValue) > k_displayWidthToSTDRatio ||
+         alpha * criticalValue < 0;
+}
+
+bool SignificanceTest::computeCurveViewRange(float transition, bool zoomSide) {
+  // Transition goes from 0 (default view) to 1 (zoomed view)
+  float alpha;
+  float z = testCriticalValue();
+  if (hypothesis()->m_alternative == Poincare::Comparison::Operator::NotEqual) {
+    if (zoomSide) {
+      alpha = thresholdAbscissa(Poincare::Comparison::Operator::Superior, 0.5);
+      z = std::abs(z);
+    } else {
+      alpha = thresholdAbscissa(Poincare::Comparison::Operator::Inferior, 0.5);
+      z = -std::abs(z);
+    }
+  } else {
+    alpha = thresholdAbscissa(hypothesis()->m_alternative);
+  }
+  if (shouldForbidZoom(alpha, z)) {
+    Shared::StatisticalDistribution::computeCurveViewRange();
+    return false;
+  }
+  float margin = std::abs(alpha - z) * k_displayZoomedInHorizontalMarginRatio;
+  if (alpha == z) {
+    // Arbitrary value to provide some zoom if we can't separate α and z
+    margin = 0.1;
+  }
+  float targetXMin = std::min(alpha, z) - margin;
+  float targetXMax = std::max(alpha, z) + margin;
+  float targetXCenter = (alpha + z) / 2;
+  float targetYMax =
+      std::max(evaluateAtAbscissa(alpha), evaluateAtAbscissa(z)) *
+      (1 + k_displayZoomedInTopMarginRatio);
+  assert(targetYMax >= 0.f);
+  if (targetYMax == 0.f) {
+    // Arbitrary value to provide some zoom if targetYMax is null
+    targetYMax = 1.0f;
+  }
+  if (std::isinf(targetYMax)) {
+    /* The probability density function could be infinite in x=0. This is the
+     * case for the Fisher distribution. */
+    assert(type() == StatisticType::F);
+    targetYMax = 5.0f;
+  }
+  float cMin = computeXMin();
+  float cMax = computeXMax();
+  // We want each zoom step to scale the width by the same factor
+  float width = std::exp(interpolate(
+      std::log(cMax - cMin), std::log(targetXMax - targetXMin), transition));
+  // and the middle of target range to progress linearly to the screen center
+  float ratio =
+      interpolate((targetXCenter - cMin) / (cMax - cMin), 0.5, transition);
+  float xMin = targetXCenter - ratio * width;
+  float xMax = xMin + width;
+
+  float height = std::exp(
+      interpolate(std::log(computeYMax()), std::log(targetYMax), transition));
+  float yMax = height;
+  float yMin = -k_displayBottomMarginRatio * height;
+  if (std::isnan(xMin)) {
+    xMin = -FLT_MAX;
+  }
+  if (std::isnan(xMax)) {
+    xMax = FLT_MAX;
+  }
+  assert(std::isfinite(yMin) && std::isfinite(yMax));
+  protectedSetXRange(xMin, xMax);
+  protectedSetYRange(yMin, yMax);
+  return true;
+}
+
+}  // namespace Inference

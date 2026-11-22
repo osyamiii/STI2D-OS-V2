@@ -1,0 +1,111 @@
+#pragma once
+
+#include <escher/tab_view_controller.h>
+
+#include "inference/controllers/inference_controller.h"
+#include "inference/controllers/tables/categorical_controller.h"
+#include "tables/results_homogeneity_table.h"
+
+namespace Inference {
+
+class ResultsHomogeneityController : public CategoricalController {
+ public:
+  ResultsHomogeneityController(Escher::ViewController* nextController,
+                               HomogeneityTest* inference);
+
+  // Responder
+  bool handleEvent(Ion::Events::Event event) override;
+
+  // ViewController
+  void viewWillAppear() override;
+  void stackOpenPage(ViewController* nextPage) override {
+    tabController()->stackOpenPage(nextPage);
+  }
+
+  void setMode(ResultsHomogeneityTable::Mode mode) {
+    m_resultsHomogeneityTable.setMode(mode);
+  }
+
+  Escher::TabViewController* tabController() {
+    return static_cast<Escher::TabViewController*>(
+        parentResponder()->parentResponder());
+  }
+
+ private:
+  CategoricalTableCell* categoricalTableCell() override {
+    return &m_resultsHomogeneityTable;
+  }
+  void createDynamicCells() override;
+  ResultsHomogeneityTable m_resultsHomogeneityTable;
+};
+
+class ResultsHomogeneityTabController : public InferenceController,
+                                        public Escher::TabViewController,
+                                        public Escher::TabViewDataSource {
+ public:
+  ResultsHomogeneityTabController(Escher::StackViewController* parent,
+                                  ControllerContainer* controllerContainer,
+                                  HomogeneityTest* inference);
+
+  ViewController::TitlesDisplay titlesDisplay() const override {
+    return ViewController::TitlesDisplay::DisplayLastTwoTitles;
+  }
+  Escher::ThemeComponent tabBackgroundColor() const override {
+    return Escher::ThemeComponent::BannerGrayDark;
+  }
+
+ private:
+  class SingleModeController : public ViewController {
+   public:
+    SingleModeController(Escher::Responder* responder,
+                         ResultsHomogeneityController* tableController)
+        : Escher::ViewController(responder),
+          m_tableController(tableController) {}
+    Escher::View* view() override { return m_tableController->view(); }
+    void initView() override { m_tableController->initView(); }
+    void viewWillAppear() override { m_tableController->viewWillAppear(); }
+
+   protected:
+    void switchToTableWithMode(ResultsHomogeneityTable::Mode mode);
+    ResultsHomogeneityController* m_tableController;
+    void handleResponderChainEvent(
+        Responder::ResponderChainEvent event) override {
+      if (event.type == ResponderChainEventType::HasBecomeFirst) {
+        m_tableController->didBecomeFirstResponder();
+      } else {
+        Escher::ViewController::handleResponderChainEvent(event);
+      }
+    }
+  };
+
+  class ExpectedValuesController : public SingleModeController {
+   public:
+    using SingleModeController::SingleModeController;
+    const char* title() const override {
+      return I18n::translate(
+          I18n::Message::HomogeneityResultsExpectedValuesTitle);
+    }
+    void viewWillAppear() override {
+      switchToTableWithMode(ResultsHomogeneityTable::Mode::ExpectedValue);
+      SingleModeController::viewWillAppear();
+    }
+  };
+
+  class ContributionsController : public SingleModeController {
+   public:
+    using SingleModeController::SingleModeController;
+    const char* title() const override {
+      return I18n::translate(I18n::Message::Contributions);
+    }
+    void viewWillAppear() override {
+      switchToTableWithMode(ResultsHomogeneityTable::Mode::Contribution);
+      SingleModeController::viewWillAppear();
+    }
+  };
+
+  ResultsHomogeneityController m_tableController;
+  ExpectedValuesController m_expectedValuesController;
+  ContributionsController m_contributionsController;
+};
+
+}  // namespace Inference

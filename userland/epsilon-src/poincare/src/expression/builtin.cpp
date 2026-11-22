@@ -1,0 +1,271 @@
+#include "builtin.h"
+
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/tree.h>
+#include <poincare/src/memory/tree_stack.h>
+#include <poincare/src/memory/type_block.h>
+#include <poincare/src/statistics/distributions/distribution_method.h>
+#include <poincare/statistics/distribution.h>
+
+#include "k_tree.h"
+
+namespace Poincare::Internal {
+
+/* TODO Choose between the map and the switch, and sort along one of the two
+ * keys to enable dichotomy. Devise a pattern for maps and move it in OMG. */
+
+constexpr static Aliases s_customIdentifiers[] = {
+    BuiltinsAliases::k_thetaAliases,
+};
+
+constexpr static Builtin s_specialIdentifiers[] = {
+    BUILTIN_TRANSLATIONS(Type::Undef, BuiltinsAliases::k_undefinedAlias,
+                         "indéfini", "indefinido", "ongedefinieerd"),
+#if POINCARE_COMPLEX_BUILTINS
+    {Type::NonReal, "nonreal"},
+    {Type::ComplexI, "i"},
+#endif
+    {Type::Inf, BuiltinsAliases::k_infinityAliases},
+#if POINCARE_BOOLEAN
+    BUILTIN_TRANSLATIONS(Type::False, "\01False\00false\00",
+                         "\01Faux\00faux\00", "\01Falso\00falso\00",
+                         "\01Onwaar\00onwaar\00"),
+    BUILTIN_TRANSLATIONS(Type::True, "\01True\00true\00", "\01Vrai\00vrai\00",
+                         "\01Verdadeiro\00verdadeiro\00", "\01Waar\00waar\00"),
+#endif
+    {Type::Pi, BuiltinsAliases::k_piAliases},
+    {Type::EulerE, "e"},
+};
+
+constexpr static BuiltinAns s_builtinAns = {/* dummy */ Type::Zero,
+                                            BuiltinsAliases::k_ansAliases};
+
+class DistributionBuiltin : public Builtin {
+ public:
+  constexpr DistributionBuiltin(Distribution::Type distribution,
+                                DistributionMethod::Type method,
+                                Aliases aliases)
+      : Builtin(Type::Distribution, aliases),
+        m_distribution(distribution),
+        m_method(method) {}
+
+  Distribution::Type distribution() const { return m_distribution; }
+  DistributionMethod::Type method() const { return m_method; }
+  Tree* pushNode(int numberOfChildren) const override;
+  int maxNumberOfParameters() const override;
+  int minNumberOfParameters() const override { return maxNumberOfParameters(); }
+
+ private:
+  Distribution::Type m_distribution;
+  DistributionMethod::Type m_method;
+};
+
+constexpr static DistributionBuiltin s_distributionsBuiltins[] = {
+#if POINCARE_DISTRIBUTION
+    {Distribution::Type::Normal, DistributionMethod::Type::CDF, "normcdf"},
+    {Distribution::Type::Normal, DistributionMethod::Type::CDFRange,
+     "normcdfrange"},
+    {Distribution::Type::Normal, DistributionMethod::Type::PDF, "normpdf"},
+    {Distribution::Type::Normal, DistributionMethod::Type::Inverse, "invnorm"},
+    {Distribution::Type::Student, DistributionMethod::Type::CDF, "tcdf"},
+    {Distribution::Type::Student, DistributionMethod::Type::CDFRange,
+     "tcdfrange"},
+    {Distribution::Type::Student, DistributionMethod::Type::PDF, "tpdf"},
+    {Distribution::Type::Student, DistributionMethod::Type::Inverse, "invt"},
+    {Distribution::Type::Binomial, DistributionMethod::Type::CDF, "binomcdf"},
+    {Distribution::Type::Binomial, DistributionMethod::Type::PDF, "binompdf"},
+    {Distribution::Type::Binomial, DistributionMethod::Type::CDFRange,
+     "binomcdfrange"},
+    {Distribution::Type::Binomial, DistributionMethod::Type::Inverse,
+     "invbinom"},
+    {Distribution::Type::Poisson, DistributionMethod::Type::CDF, "poissoncdf"},
+    {Distribution::Type::Poisson, DistributionMethod::Type::PDF, "poissonpdf"},
+    {Distribution::Type::Poisson, DistributionMethod::Type::CDFRange,
+     "poissoncdfrange"},
+    {Distribution::Type::Poisson, DistributionMethod::Type::Inverse,
+     "invpoisson"},
+    {Distribution::Type::Uniform, DistributionMethod::Type::CDF, "uniformcdf"},
+    {Distribution::Type::Uniform, DistributionMethod::Type::CDFRange,
+     "uniformcdfrange"},
+    {Distribution::Type::Uniform, DistributionMethod::Type::Inverse,
+     "invuniform"},
+    {Distribution::Type::Exponential, DistributionMethod::Type::CDF, "expcdf"},
+    {Distribution::Type::Exponential, DistributionMethod::Type::CDFRange,
+     "expcdfrange"},
+    {Distribution::Type::Exponential, DistributionMethod::Type::Inverse,
+     "invexp"},
+    {Distribution::Type::Chi2, DistributionMethod::Type::CDF, "chi2cdf"},
+    {Distribution::Type::Chi2, DistributionMethod::Type::CDFRange,
+     "chi2cdfrange"},
+    {Distribution::Type::Chi2, DistributionMethod::Type::Inverse, "invchi2"},
+    {Distribution::Type::Geometric, DistributionMethod::Type::CDF, "geomcdf"},
+    {Distribution::Type::Geometric, DistributionMethod::Type::CDFRange,
+     "geomcdfrange"},
+    {Distribution::Type::Geometric, DistributionMethod::Type::PDF, "geompdf"},
+    {Distribution::Type::Geometric, DistributionMethod::Type::Inverse,
+     "invgeom"},
+    {Distribution::Type::Hypergeometric, DistributionMethod::Type::CDF,
+     "hgeomcdf"},
+    {Distribution::Type::Hypergeometric, DistributionMethod::Type::CDFRange,
+     "hgeomcdfrange"},
+    {Distribution::Type::Hypergeometric, DistributionMethod::Type::PDF,
+     "hgeompdf"},
+    {Distribution::Type::Hypergeometric, DistributionMethod::Type::Inverse,
+     "invhgeom"},
+    {Distribution::Type::Fisher, DistributionMethod::Type::CDF, "Fcdf"},
+    {Distribution::Type::Fisher, DistributionMethod::Type::CDFRange,
+     "Fcdfrange"},
+    {Distribution::Type::Fisher, DistributionMethod::Type::Inverse, "invF"},
+#endif
+};
+
+Tree* Builtin::pushNode(int numberOfChildren) const {
+  Tree* result = SharedTreeStack->pushBlock(m_type);
+  if (TypeBlock(m_type).isNAry()) {
+    SharedTreeStack->pushValueBlock(numberOfChildren);
+  } else if (TypeBlock(m_type).isRandomized()) {
+    // Add random seeds
+    assert(result->nodeSize() == 2);
+    SharedTreeStack->pushValueBlock(0);
+  } else {
+    assert(result->nodeSize() == 1);
+  }
+  return result;
+}
+
+Tree* DistributionBuiltin::pushNode(int numberOfChildren) const {
+  Tree* result = SharedTreeStack->pushBlock(Type::Distribution);
+  SharedTreeStack->pushValueBlock(numberOfChildren);
+  SharedTreeStack->pushValueBlock(static_cast<uint8_t>(m_distribution));
+  SharedTreeStack->pushValueBlock(static_cast<uint8_t>(m_method));
+  return result;
+}
+
+Tree* BuiltinAns::pushNode(int numberOfChildren) const {
+  assert(numberOfChildren == 0);
+  return "Ans"_e->cloneTree();
+}
+
+const Builtin* Builtin::GetReservedFunction(LayoutSpan name) {
+  // WithLayout comes first because we want to yield Sum before ListSum
+  for (const Builtin& builtin : s_builtinsWithLayout) {
+    if (builtin.m_aliases.contains(name)) {
+      return &builtin;
+    }
+  }
+  for (const Builtin& builtin : s_builtins) {
+    if (builtin.m_aliases.contains(name)) {
+      return &builtin;
+    }
+  }
+  for (const DistributionBuiltin& builtin : s_distributionsBuiltins) {
+    if (builtin.m_aliases.contains(name)) {
+      return &builtin;
+    }
+  }
+  return nullptr;
+}
+
+const Builtin* Builtin::GetReservedFunction(
+    const Tree* e, Preferences::TranslateBuiltins translate) {
+  const Builtin* builtin = GetReservedFunction(e->type(), translate);
+  if (builtin) {
+    return builtin;
+  }
+  if (e->isDistribution()) {
+    DistributionMethod::Type method = DistributionMethod::GetType(e);
+    Distribution::Type distribution = Distribution::GetType(e);
+    for (const DistributionBuiltin& builtin : s_distributionsBuiltins) {
+      if (builtin.method() == method &&
+          builtin.distribution() == distribution) {
+        return &builtin;
+      }
+    }
+  }
+  return nullptr;
+}
+
+const Builtin* Builtin::GetSpecialIdentifier(LayoutSpan name) {
+  if (s_builtinAns.m_aliases.contains(name)) {
+    return &s_builtinAns;
+  }
+  for (const Builtin& builtin : s_specialIdentifiers) {
+    if (builtin.m_aliases.contains(name)) {
+      return &builtin;
+    }
+  }
+  return nullptr;
+}
+
+const Builtin* Builtin::GetSpecialIdentifier(
+    Type type, Preferences::TranslateBuiltins translate) {
+  if (TypeBlock::IsUndefined(type) && type != Type::Undef
+#if POINCARE_COMPLEX_BUILTINS
+      && type != Type::NonReal
+#endif
+  ) {
+    // UndefSystem should not be laid out or displayed
+    assert(type != Type::UndefSystem);
+    // If the type is undefined, we return the Undef special identifier.
+    // This is useful for the parser to handle undefined expressions.
+    return GetSpecialIdentifier(Type::Undef, translate);
+  }
+  for (const Builtin& builtin : s_specialIdentifiers) {
+    if (builtin.m_type == type) {
+      return SearchForTranslation(s_specialIdentifiers,
+                                  std::size(s_specialIdentifiers),
+                                  &builtin - s_specialIdentifiers, translate);
+    }
+  }
+  return nullptr;
+}
+
+const char* Builtin::GetCustomIdentifierMainAlias(LayoutSpan name) {
+  for (Aliases aliases : s_customIdentifiers) {
+    if (aliases.contains(name)) {
+      return aliases.mainAlias();
+    }
+  }
+  return nullptr;
+}
+
+int Builtin::maxNumberOfParameters() const {
+  switch (m_type) {
+    case Type::GCD:
+    case Type::LCM:
+    case Type::Piecewise:
+      return NAry::k_maxNumberOfChildren;
+    default:
+      /* For types such as Round, TypeBlock::NumberOfChildren gives the max
+       * number of parameters. */
+      return TypeBlock::NumberOfChildren(m_type);
+  }
+}
+
+int Builtin::minNumberOfParameters() const {
+  switch (m_type) {
+    case Type::Round:
+    case Type::Mean:
+    case Type::Variance:
+    case Type::StdDev:
+    case Type::SampleStdDev:
+    case Type::Median:
+    case Type::RandInt:
+    case Type::Piecewise:
+      return 1;
+    case Type::GCD:
+    case Type::LCM:
+      return 2;
+    case Type::Diff:
+      return 3;
+    default:
+      return TypeBlock::NumberOfChildren(m_type);
+  }
+}
+
+int DistributionBuiltin::maxNumberOfParameters() const {
+  return Distribution::NumberOfParameters(m_distribution) +
+         DistributionMethod::NumberOfParameters(m_method);
+}
+
+}  // namespace Poincare::Internal

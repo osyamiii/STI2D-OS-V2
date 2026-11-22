@@ -1,0 +1,514 @@
+#include "plot_view_plots.h"
+
+#include <escher/bordered.h>
+#include <escher/theme/color_picker.h>
+#include <float.h>
+
+#include <algorithm>
+
+using namespace Poincare;
+using namespace Escher;
+
+namespace Shared {
+namespace PlotPolicy {
+
+// WithCurves::Pattern
+
+WithCurves::Pattern::Pattern(KDColor c0, KDColor c1, KDColor c2, KDColor c3,
+                             ThemeComponent cBackground)
+    : m_c0(c0), m_c1(c1), m_c2(c2), m_c3(c3), m_cBackground(cBackground) {}
+
+WithCurves::Pattern::Pattern(Escher::ThemeComponent c)
+    : m_c0{ColorPicker::Resolve(c)},
+      m_c1{ColorPicker::Resolve(c)},
+      m_c2{ColorPicker::Resolve(c)},
+      m_c3{ColorPicker::Resolve(c)},
+      m_cBackground{c} {}
+
+WithCurves::Pattern::Pattern(bool s0, bool s1, bool s2, bool s3, KDColor color,
+                             ThemeComponent backgroundColor)
+    : Pattern(s0 ? color : ColorPicker::Resolve(backgroundColor),
+              s1 ? color : ColorPicker::Resolve(backgroundColor),
+              s2 ? color : ColorPicker::Resolve(backgroundColor),
+              s3 ? color : ColorPicker::Resolve(backgroundColor),
+              backgroundColor) {}
+
+WithCurves::Pattern::Pattern(int s, KDColor color,
+                             ThemeComponent backgroundColor)
+    : Pattern(s == 0, s == 1, s == 2, s == 3, color, backgroundColor) {}
+
+KDCoordinate WithCurves::Pattern::drawInLine(
+    const AbstractPlotView* plotView, KDContext* ctx, KDRect rect,
+    OMG::Axis parallel, float position, float min, float max,
+    KDCoordinate coordinateToSkip) const {
+  KDCoordinate posC =
+      plotView->floatToKDCoordinatePixel(OMG::OtherAxis(parallel), position);
+  if (posC == coordinateToSkip) {
+    // Line has already been plotted at this coordinate.
+    return posC;
+  }
+  KDColor firstColor, secondColor;
+  if (posC % (k_size / 2) == 0) {
+    firstColor = m_c0;
+    secondColor = m_c1;
+  } else {
+    firstColor = m_c2;
+    secondColor = m_c3;
+  }
+
+  KDColor backgroundColor = ColorPicker::Resolve(m_cBackground);
+  bool canSpeedUpDrawing =
+      firstColor == backgroundColor && secondColor == backgroundColor;
+  if (canSpeedUpDrawing) {
+    if (m_cBackground != k_transparent) {
+      plotView->drawStraightSegment(ctx, rect, parallel, position, min, max,
+                                    backgroundColor);
+    }
+    return posC;
+  }
+
+  if (max < min) {
+    std::swap(max, min);
+  }
+  KDCoordinate minC = plotView->floatToKDCoordinatePixel(parallel, min);
+  KDCoordinate maxC = plotView->floatToKDCoordinatePixel(parallel, max);
+  if (parallel == OMG::Axis::Horizontal) {
+    minC = std::max(minC, rect.left());
+    maxC = std::min(maxC, static_cast<KDCoordinate>(rect.right() + 1));
+  } else {
+    /* Swap minC and maxC, as the Y axis changes direction between the range
+     * space and screen space. */
+    KDCoordinate temp = minC;
+    minC = std::max(maxC, rect.top());
+    maxC = std::min(temp, static_cast<KDCoordinate>(rect.bottom() + 1));
+  }
+  if (minC >= maxC) {
+    return posC;
+  }
+
+  if (posC % k_size >= k_size / 2) {
+    std::swap(firstColor, secondColor);
+  }
+
+  KDColor colors[k_size];
+  if (posC % (k_size / 2) == 0) {
+    colors[0] = firstColor;
+    colors[2] = secondColor;
+    colors[1] = colors[3] = ColorPicker::Resolve(m_cBackground);
+  } else {
+    colors[1] = firstColor;
+    colors[3] = secondColor;
+    colors[0] = colors[2] = ColorPicker::Resolve(m_cBackground);
+  }
+
+  for (int i = minC; i < maxC; i++) {
+    KDColor color = colors[i % k_size];
+    if (color != ColorPicker::Resolve(k_transparent)) {
+      ctx->setPixel(parallel == OMG::Axis::Horizontal ? KDPoint(i, posC)
+                                                      : KDPoint(posC, i),
+                    color);
+    }
+  }
+  return posC;
+}
+
+// WithCurves::CurveDrawing
+
+WithCurves::CurveDrawing::CurveDrawing(Curve2D curve, const void* context,
+                                       float tStart, float tEnd, float tStep,
+                                       KDColor color, bool thick, bool dashed)
+    : m_curve(curve),
+      m_pattern(),
+      m_context(context),
+      m_curveDouble(nullptr),
+      m_discontinuity(NoDiscontinuity),
+      m_tStart(tStart),
+      m_tEnd(tEnd),
+      m_tStep(tStep),
+      m_patternStart(NAN),
+      m_patternEnd(NAN),
+      m_color(color),
+      m_axis(OMG::Axis::Horizontal),
+      m_thick(thick),
+      m_dashed(dashed),
+      m_patternWithoutCurve(false),
+      m_drawStraightLinesEarly(true) {
+  assert(std::isfinite(m_tEnd) && std::isfinite(m_tStart));
+  // Assert that the chosen step is not too small (ad-hoc value)
+  assert((m_tEnd - m_tStart) / m_tStep < 10e5);
+}
+
+void WithCurves::CurveDrawing::setPatternOptions(
+    Pattern pattern, float patternStart, float patternEnd,
+    Curve2D patternLowerBound, Curve2D patternUpperBound,
+    bool patternWithoutCurve, OMG::Axis axis) {
+  m_pattern = pattern;
+  m_patternStart = patternStart;
+  m_patternEnd = patternEnd;
+  m_patternLowerBound = patternLowerBound;
+  m_patternUpperBound = patternUpperBound;
+  m_patternWithoutCurve = patternWithoutCurve;
+  m_axis = axis;
+}
+
+void WithCurves::CurveDrawing::setPrecisionOptions(
+    bool drawStraightLinesEarly, Curve2DEvaluation<double> curveDouble,
+    DiscontinuityTest discontinuity) {
+  m_drawStraightLinesEarly = drawStraightLinesEarly;
+  m_curveDouble = curveDouble;
+  m_discontinuity = discontinuity;
+}
+
+void WithCurves::CurveDrawing::draw(const AbstractPlotView* plotView,
+                                    KDContext* ctx, KDRect rect) const {
+  assert(plotView);
+  if (m_tStart > m_tEnd) {
+    return;
+  }
+
+  plotView->setDashed(m_dashed);
+
+  float previousT = NAN, t = NAN;
+  Coordinate2D<float> previousXY, xy;
+  int i = 0;
+  bool isLastSegment = false;
+
+  do {
+    previousT = t;
+    t = m_tStart + (i++) * m_tStep;
+    if (t <= m_tStart) {
+      t = m_tStart + FLT_EPSILON;
+    }
+    if (t >= m_tEnd) {
+      t = m_tEnd - FLT_EPSILON;
+      isLastSegment = true;
+    }
+    if (previousT == t) {
+      // No need to draw segment. Happens when tStep << tStart .
+      continue;
+    }
+    previousXY = xy;
+    xy = m_curve.evaluate(t, m_context);
+    joinDots(plotView, ctx, rect, previousT, previousXY, t, xy,
+             k_maxNumberOfIterations, m_discontinuity);
+  } while (!isLastSegment);
+
+  plotView->setDashed(false);
+}
+
+static bool pointInBoundingBox(float x1, float y1, float x2, float y2, float xC,
+                               float yC) {
+  return ((x1 < xC && xC < x2) || (x2 < xC && xC < x1) ||
+          (x2 == xC && xC == x1)) &&
+         ((y1 < yC && yC < y2) || (y2 < yC && yC < y1) ||
+          (y2 == yC && yC == y1));
+}
+
+void WithCurves::CurveDrawing::joinDots(const AbstractPlotView* plotView,
+                                        KDContext* ctx, KDRect rect, float t1,
+                                        Coordinate2D<float> xy1, float t2,
+                                        Coordinate2D<float> xy2,
+                                        int remainingIterations,
+                                        DiscontinuityTest discontinuity) const {
+  assert(plotView);
+  KDCoordinate t2PatternCoordinate = drawPattern(plotView, ctx, rect, t2, xy2);
+
+  bool isFirstDot = std::isnan(t1);
+  bool isLeftDotValid = std::isfinite(xy1.x()) && std::isfinite(xy1.y());
+  bool isRightDotValid = std::isfinite(xy2.x()) && std::isfinite(xy2.y());
+
+  if (!(isLeftDotValid || isRightDotValid)) {
+    return;
+  }
+
+  Coordinate2D<float> p1 = plotView->floatToPixel2D(xy1);
+  Coordinate2D<float> p2 = plotView->floatToPixel2D(xy2);
+
+  if (isRightDotValid &&
+      (isFirstDot || (!isLeftDotValid && remainingIterations <= 0) ||
+       (isLeftDotValid && plotView->pointsInSameStamp(p1, p2, m_thick)))) {
+    /* We need to be sure that the point is not an artifact caused by error
+     * in float approximation. The value of pixelTolerance matters little,
+     * as wrong points will be off by a large margin. */
+    constexpr float pixelTolerance = 1.f;
+    if (!m_curveDouble ||
+        (std::fabs(p2.y() - (plotView->floatToPixel2D(
+                                 m_curveDouble(t2, m_curve.model(), m_context)))
+                                .y()) < pixelTolerance)) {
+      plotView->stamp(ctx, rect, p2, m_color, m_thick);
+    }
+    return;
+  }
+
+  float t12 = 0.5f * (t1 + t2);
+  Coordinate2D<float> xy12 = m_curve.evaluate(t12, m_context);
+
+  bool discontinuous = discontinuity(t1, t2, m_curve.model());
+  if (discontinuous) {
+    /* If the function is discontinuous, it can never join dots at abscissas of
+     * discontinuity, and thus will always go to max recursion. To avoid this,
+     * and enhance performances, we set the condition that if one of the two
+     * dots left and right of the discontinuity is on the same pixel as the
+     * middle dot, we are close enough of the discontinuity and we can stop
+     * drawing more precisely. */
+    Coordinate2D<float> p12 = plotView->floatToPixel2D(xy12);
+    if (isRightDotValid && (plotView->pointsInSameStamp(p1, p12, m_thick) ||
+                            plotView->pointsInSameStamp(p12, p2, m_thick))) {
+      plotView->stamp(ctx, rect, p2, m_color, m_thick);
+      return;
+    }
+  } else if (isLeftDotValid && isRightDotValid &&
+             (m_drawStraightLinesEarly || remainingIterations <= 0) &&
+             pointInBoundingBox(xy1.x(), xy1.y(), xy2.x(), xy2.y(), xy12.x(),
+                                xy12.y())) {
+    /* As the middle dot is between the two dots, we assume that we
+     * can draw a 'straight' line between the two */
+    constexpr float dangerousSlope = 1e6f;
+    bool straightJoinDots = true;
+    if (m_curveDouble &&
+        std::fabs((p2.y() - p1.y()) / (p2.x() - p1.x())) > dangerousSlope) {
+      /* We need to make sure we're not drawing a vertical asymptote because of
+       * rounding errors. */
+      Coordinate2D<double> xy1Double =
+          m_curveDouble(t1, m_curve.model(), m_context);
+      Coordinate2D<double> xy2Double =
+          m_curveDouble(t2, m_curve.model(), m_context);
+      Coordinate2D<double> xy12Double =
+          m_curveDouble(t12, m_curve.model(), m_context);
+      if (pointInBoundingBox(xy1Double.x(), xy1Double.y(), xy2Double.x(),
+                             xy2Double.y(), xy12Double.x(), xy12Double.y())) {
+        p1 = plotView->floatToPixel2D(xy1Double);
+        p2 = plotView->floatToPixel2D(xy2Double);
+      } else {
+        straightJoinDots = false;
+      }
+    }
+    if (straightJoinDots) {
+      // Skip draw pattern if it is at the same coordinate as the first time
+      drawPattern(plotView, ctx, rect, t12, xy12, t2PatternCoordinate);
+      plotView->straightJoinDots(ctx, rect, p1, p2, m_color, m_thick);
+      return;
+    }
+  }
+
+  if (remainingIterations <= 0) {
+    return;
+  }
+  remainingIterations--;
+
+  CurveViewRange* range = plotView->range();
+  float xMin = range->xMin();
+  float xMax = range->xMax();
+  float yMin = range->yMin();
+  float yMax = range->yMax();
+  if ((xMax < xy1.x() && xMax < xy2.x()) ||
+      (xy1.x() < xMin && xy2.x() < xMin) ||
+      (yMax < xy1.y() && yMax < xy2.y()) ||
+      (xy1.y() < yMin && xy2.y() < yMin)) {
+    /* Discard some recursion steps to save computation time on dots that are
+     * likely not to be drawn. This makes it so some parametric functions
+     * are drawn faster. Example: f(t) = [floor(t)*cos(t), floor(t)*sin(t)]
+     * If t is in [0, 60pi], and you zoom in a lot, the curve used to take
+     * too much time to draw outside of the screen.
+     * It can alter precision with some functions though, especially when
+     * zooming excessively (compared to plot range) on local minimums
+     * For instance, plotting parametric function [t,|t-π|] with t in
+     * [0,3000], x in [-1,20] and y in [-1,3] will show inaccuracies that
+     * would otherwise have been visible at higher zoom only, with x in [2,4]
+     * and y in [-0.2,0.2] in this case. */
+    remainingIterations /= 2;
+  }
+
+  joinDots(plotView, ctx, rect, t1, xy1, t12, xy12, remainingIterations,
+           discontinuous ? m_discontinuity : NoDiscontinuity);
+  joinDots(plotView, ctx, rect, t12, xy12, t2, xy2, remainingIterations,
+           discontinuous ? m_discontinuity : NoDiscontinuity);
+}
+
+KDCoordinate WithCurves::CurveDrawing::drawPattern(
+    const AbstractPlotView* plotView, KDContext* ctx, KDRect rect, float t,
+    Poincare::Coordinate2D<float> xy, KDCoordinate coordinateToSkip) const {
+  // Draw a line with the pattern
+  float (Coordinate2D<float>::*abscissa)() const =
+      m_axis == OMG::Axis::Horizontal ? &Coordinate2D<float>::x
+                                      : &Coordinate2D<float>::y;
+  float (Coordinate2D<float>::*ordinate)() const =
+      m_axis == OMG::Axis::Horizontal ? &Coordinate2D<float>::y
+                                      : &Coordinate2D<float>::x;
+  float patternMin =
+      ((m_patternLowerBound ? m_patternLowerBound.evaluate(t, m_context) : xy).*
+       ordinate)();
+  float patternMax =
+      ((m_patternUpperBound ? m_patternUpperBound.evaluate(t, m_context) : xy).*
+       ordinate)();
+  if (m_patternWithoutCurve) {
+    if (std::isnan(patternMin)) {
+      patternMin = -INFINITY;
+    }
+    if (std::isnan(patternMax)) {
+      patternMax = INFINITY;
+    }
+  }
+  if (!(std::isnan(patternMin) || std::isnan(patternMax)) &&
+      patternMin != patternMax && m_patternStart <= t && t < m_patternEnd) {
+    return m_pattern.drawInLine(plotView, ctx, rect, OMG::OtherAxis(m_axis),
+                                (xy.*abscissa)(), patternMin, patternMax,
+                                coordinateToSkip);
+  }
+  return KDCoordinate(-1);
+}
+
+// WithCurves
+
+void WithCurves::drawArcOfEllipse(const AbstractPlotView* plotView,
+                                  KDContext* ctx, KDRect rect,
+                                  Coordinate2D<float> center, float width,
+                                  float height, float angleStart,
+                                  float angleEnd, KDColor color) const {
+  assert(plotView);
+
+  constexpr float segmentLength = 2.f;
+  float radiusInPixel = std::max(width / plotView->pixelWidth(),
+                                 height / plotView->pixelHeight());
+  float angleStep = segmentLength / radiusInPixel;
+  float parameters[] = {center.x(), center.y(), width, height};
+  Curve2DEvaluation<float> arc = [](float t, const void* model, const void*) {
+    const float* parameters = static_cast<const float*>(model);
+    float x = parameters[0];
+    float y = parameters[1];
+    float a = parameters[2];
+    float b = parameters[3];
+    return Coordinate2D<float>(a * std::cos(t) + x, b * std::sin(t) + y);
+  };
+  CurveDrawing plot(Curve2D(arc, parameters), nullptr, angleStart, angleEnd,
+                    angleStep, color, false);
+  plot.setPrecisionOptions(false, nullptr, NoDiscontinuity);
+  plot.draw(plotView, ctx, rect);
+}
+
+// WithHistogram::HistogramDrawing
+
+WithHistogram::HistogramDrawing::HistogramDrawing(
+    Curve1D curve, const void* model, const void* context,
+    HighlightTest highlightTest, double start, double barsWidth,
+    bool highlightWithBorder, bool fillBars, KDColor color,
+    KDColor highlightColor)
+    : m_curve(curve),
+      m_model(model),
+      m_context(context),
+      m_highlightTest(highlightTest),
+      m_start(start),
+      m_barsWidth(barsWidth),
+      m_highlightWithBorder(highlightWithBorder),
+      m_fillBars(fillBars),
+      m_color(color),
+      m_highlightColor(highlightColor) {}
+
+void WithHistogram::HistogramDrawing::draw(const AbstractPlotView* plotView,
+                                           KDContext* ctx, KDRect rect) const {
+  /* To values interval [a, b[ correspond a pixel
+   * interval [A, B[. Tick for a is at pixel A and
+   * tick for b is at pixel B.
+   *
+   *  ---------------------------------------
+   * | A |   |   |   |   |   |   |   |   | B |
+   *  ---------------------------------------
+   *  <--------------------------------->
+   *                bar width
+   *
+   * If we want to display borders:
+   *  - left border is drawn at A
+   *  - right border is drawn at B
+   */
+  double barsWidth =
+      std::max(static_cast<double>(plotView->pixelWidth()), m_barsWidth);
+  double rectMin = plotView->pixelToFloat(OMG::Axis::Horizontal, rect.left());
+  double rectMinBarIndex = std::floor((rectMin - m_start) / barsWidth);
+  double rectMinBarStart = m_start + rectMinBarIndex * barsWidth;
+  double rectMax = plotView->pixelToFloat(OMG::Axis::Horizontal, rect.right());
+  double rectMaxBarIndex = std::floor((rectMax - m_start) / barsWidth);
+  double rectMaxBarEnd = m_start + (rectMaxBarIndex + 1) * barsWidth;
+  KDCoordinate plotViewHeight =
+      plotView->floatToKDCoordinatePixel(OMG::Axis::Vertical, 0.f);
+
+  double xPrevious = NAN;
+  for (double x = rectMinBarStart; x < rectMaxBarEnd; x += barsWidth) {
+    if (x == xPrevious) {
+      return;
+    }
+    xPrevious = x;
+
+    // Step 1: Compute values
+    double xCenter = m_fillBars ? x + 0.5 * barsWidth : x;
+    double y = m_curve(xCenter, m_model, m_context);
+    if (!std::isfinite(y) || y == 0.) {
+      continue;
+    }
+    assert(y > 0.); /* TODO This method is not ready to display histogram with
+                        negative values. */
+
+    // Step 2: Compute variables depending on highlight
+    KDColor color = m_color;
+    KDCoordinate borderWidth = 0;
+    bool isHighlighted =
+        m_highlightTest && m_highlightTest(xCenter, m_model, m_context);
+    if (m_highlightWithBorder) {
+      // Highlighted bars are drawn with a wider border
+      borderWidth = isHighlighted ? k_highlightBorderWidth : k_borderWidth;
+    } else if (isHighlighted) {
+      // Highlighted bars are drawn with a different color
+      color = m_highlightColor;
+    }
+
+    // Step 3: Compute pixels
+    //  Step 3.1: Bar width
+    KDCoordinate left =
+        plotView->floatToKDCoordinatePixel(OMG::Axis::Horizontal, x);
+    KDCoordinate leftOfNextBar = plotView->floatToKDCoordinatePixel(
+        OMG::Axis::Horizontal, x + barsWidth);
+    if (leftOfNextBar <= rect.left()) {
+      continue;
+    }
+    KDCoordinate barWidth;
+    /* If m_fillBars is true, we fill the space between one bar and the next
+     * (e.g. histograms in the Statistics app). Otherwise, we only draw a thin
+     * bar on leftmost pixels (e.g. histograms for discrete distributions). */
+    if (m_fillBars) {
+      // Bar width extends to the next bar because adjacent bars share a border
+      barWidth = leftOfNextBar - left + 1;
+    } else {
+      assert(borderWidth == 0);
+      barWidth = k_hollowBarWidth;
+    }
+
+    //   Step 3.2: Bar height
+    KDCoordinate top =
+        plotView->floatToKDCoordinatePixel(OMG::Axis::Vertical, y);
+    /* Clip bar top to the visible area. The y value may exceed the plot's
+     * y-range (e.g. due to numerical instability for extreme parameters). */
+    top = std::max(top, static_cast<KDCoordinate>(0));
+    KDCoordinate barHeight = plotViewHeight - top;
+    assert(barHeight >= 0);
+    KDCoordinate minBarHeight = 1 + (m_highlightWithBorder ? k_borderWidth : 0);
+    barHeight = std::max(barHeight, minBarHeight);
+    top = plotViewHeight - barHeight;
+    borderWidth = std::min(borderWidth, barHeight);
+    borderWidth = std::min(borderWidth, barWidth);
+
+    //   Step 4: Draw
+    // Interior
+    KDRect innerBarRect(left + borderWidth, top + borderWidth,
+                        barWidth - 2 * borderWidth, barHeight - borderWidth);
+    ctx->fillRect(innerBarRect, color);
+    if (borderWidth > 0) {
+      assert(m_highlightWithBorder);
+      Escher::Bordered::DrawOuterBorderOfRect(
+          ctx, innerBarRect, borderWidth, m_highlightColor,
+          Escher::Bordered::Mask{
+              .top = true, .right = true, .bottom = false, .left = true});
+    }
+  }
+}
+
+}  // namespace PlotPolicy
+}  // namespace Shared

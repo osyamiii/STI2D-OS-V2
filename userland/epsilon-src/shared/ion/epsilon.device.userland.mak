@@ -1,0 +1,97 @@
+_sources_ion_userland_svc := $(addprefix device/userland/drivers/, \
+  authentication.cpp \
+  backlight.cpp \
+  battery.cpp \
+  board.cpp \
+  circuit_breaker.cpp \
+  compilation_flags.cpp \
+  crc32.cpp \
+  device_name.cpp \
+  display.cpp \
+  events.cpp \
+  exam_bytes.cpp \
+  fcc_id.cpp \
+  flash_write_with_interruptions.cpp \
+  init.cpp \
+  keyboard.cpp \
+  led.cpp \
+  pcb_version.cpp \
+  persisting_bytes.cpp \
+  power.cpp \
+  random.cpp \
+  reset_svcall.cpp \
+  serial_number_svcall.cpp \
+  timing.cpp \
+  usb.cpp \
+  usb_svcall.cpp \
+)
+
+_sources_ion_userland := \
+$(addprefix device/userland/boot/, \
+  abort.cpp:-test \
+  abort_freeze.cpp:+test \
+  isr.cpp \
+  rt0.cpp \
+) \
+$(addprefix device/userland/drivers/, \
+  board_dual_slots.cpp \
+  board_ram_dfu_xip.cpp \
+  clipboard.cpp \
+  console_dummy.cpp:-consoledisplay \
+  external_apps.cpp:+allow3rdparty \
+  reset.cpp \
+  serial_number.cpp \
+  stack.cpp \
+  userland_header.cpp \
+) \
+$(addprefix device/shared/, \
+  boot/rt0.cpp \
+  boot/rt0_no_init_array.cpp:-test \
+  boot/rt0_init_array.cpp:+test \
+  post_and_hardware_tests.cpp:-nopost \
+) \
+$(addprefix device/shared/drivers/, \
+  assert.cpp \
+  board_unprivileged.cpp \
+  console_display.cpp:+consoledisplay \
+  dfu_interfaces.cpp \
+  exit.cpp:+test \
+  flash_information.cpp \
+  pcb_version.cpp \
+  read_only_memory.cpp \
+  trampoline.cpp \
+  usb_unprivileged.cpp \
+) \
+$(addprefix shared/, \
+  dummy/external_apps.cpp:-allow3rdparty \
+  collect_registers.cpp \
+  console_line.cpp \
+  display.cpp \
+  display_context.cpp \
+  events.cpp \
+  exam_mode.cpp \
+  layout_events/$(ION_variant)/layout_events.cpp \
+  stack_position.cpp \
+  storage/file_system.cpp \
+  storage/record_name_verifier.cpp \
+  storage/record.cpp \
+) \
+$(addprefix test/, \
+  exam_bytes.cpp:+test \
+  exam_mode.cpp:+test \
+  storage.cpp:+test \
+) \
+  $(_sources_ion_userland_svc)
+
+$(call all_objects_for,$(addprefix $(PATH_ion)/src/,$(_sources_ion_userland_svc))): SFLAGS += -fno-lto
+
+
+_lddeps_ion_userland := \
+  $(PATH_ion)/src/device/userland/flash/userland_A.ld:+A:-test \
+  $(PATH_ion)/src/device/userland/flash/userland_test_A.ld:+A:+test \
+  $(PATH_ion)/src/device/userland/flash/userland_B.ld:+B:-test \
+  $(PATH_ion)/src/device/userland/flash/userland_test_B.ld:+B:+test
+
+_ldflags_ion_userland := \
+  $(patsubst %,-Wl$(,)-T$(,)%,$(_lddeps_ion_userland)) \
+  -L$(PATH_ion)/src/device/userland/flash

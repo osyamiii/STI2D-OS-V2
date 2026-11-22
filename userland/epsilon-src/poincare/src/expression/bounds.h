@@ -1,0 +1,83 @@
+#pragma once
+
+#include <poincare/properties.h>
+#include <poincare/src/memory/tree.h>
+
+#include <algorithm>
+#include <cmath>
+
+namespace Poincare::Internal {
+
+class Bounds {
+ public:
+  /* Get the properties of a Tree via double bounds, originally created to
+   * improve the properties of difference e.g. pi - 1/2 */
+  static Poincare::Properties Properties(const Tree* e);
+
+  // Compute upper and lower bounds of a Tree
+  static Bounds Compute(const Tree* e);
+
+  bool areUndefined() const {
+    return std::isnan(m_lower) || std::isnan(m_upper);
+  }
+
+  double lower() const { return m_lower; }
+  double upper() const { return m_upper; }
+  double width() const {
+    /* If the bounds are equal, 0.0 is returned to avoid floating-point errors
+     * when subtracting two equal numbers */
+    return (m_lower == m_upper) ? 0.0 : m_upper - m_lower;
+  }
+
+ private:
+  Bounds(double lower, double upper, uint8_t ulp = 1)
+      : m_lower(lower), m_upper(upper) {
+    spread(ulp);
+  };
+  constexpr Bounds() = default;
+  constexpr static Bounds Invalid() { return Bounds(); }
+  static Bounds Mult(const Tree* e);
+  static Bounds Add(const Tree* e);
+  static Bounds Pow(const Tree* e);
+  static Bounds Trig(const Tree* e);
+  void remove();
+  void flip() { std::swap(m_lower, m_upper); }
+  bool isStrictlyPositive() const {
+    assert(exists());
+    return 0 < m_lower;
+  }
+  bool isStrictlyNegative() const {
+    assert(exists());
+    return m_upper < 0;
+  }
+  bool isNull() const {
+    assert(exists());
+    return m_lower == 0 && m_upper == 0;
+  }
+  void applyMonotoneFunction(double (*f)(double), uint8_t ulp_precision = 1);
+  /* Spread lower and upper bounds by specified ulp */
+  void spread(unsigned int ulp_precision = 1);
+  /* Check bounds are well defined */
+  bool exists() const {
+    return std::isfinite(m_lower) && std::isfinite(m_upper);
+  }
+  /* Check if bounds exists and is valid, meaning either:
+   * [lower <= upper < 0],
+   * [0 < lower <= upper],
+   * or [lower == upper == 0]. */
+  bool hasKnownStrictSign() const {
+    assert(exists() && m_lower <= m_upper);
+    return m_upper < 0 || 0 < m_lower || m_lower == m_upper;
+  }
+
+#if POINCARE_TREE_LOG
+  void log() {
+    std::cout << "Bounds (" << m_lower << ',' << m_upper << ')' << std::endl;
+  }
+#endif
+
+  double m_lower = NAN;
+  double m_upper = NAN;
+};
+
+}  // namespace Poincare::Internal

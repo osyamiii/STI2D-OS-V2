@@ -1,0 +1,97 @@
+#include "results_homogeneity_table.h"
+
+#include <escher/theme/color_picker.h>
+
+#include "homogeneity_data_source.h"
+#include "inference/controllers/chi_square/results_homogeneity_controller.h"
+#include "inference/models/chi2_test.h"
+
+using namespace Escher;
+
+namespace Inference {
+
+ResultsHomogeneityTable::ResultsHomogeneityTable(
+    Escher::Responder* parentResponder, HomogeneityTest* test,
+    ResultsHomogeneityController* resultsTableController,
+    Escher::ScrollViewDelegate* scrollViewDelegate)
+    : CategoricalTableCell(parentResponder, this, scrollViewDelegate),
+      m_inference(test),
+      m_mode(Mode::ExpectedValue),
+      m_resultsTableController(resultsTableController) {
+  m_selectableTableView.margins()->setBottom(Metric::CellSeparatorThickness);
+}
+
+void ResultsHomogeneityTable::handleResponderChainEvent(
+    Responder::ResponderChainEvent event) {
+  if (event.type == ResponderChainEventType::HasBecomeFirst) {
+    if (selectedRow() < 0) {
+      selectColumn(1);
+    }
+    // The number of data might have changed
+    if (selectedRow() >= numberOfRows() ||
+        selectedColumn() >= numberOfColumns()) {
+      selectRow(1);
+      selectColumn(1);
+    }
+    CategoricalTableCell::handleResponderChainEvent(event);
+  } else {
+    CategoricalTableCell::handleResponderChainEvent(event);
+  }
+}
+
+void ResultsHomogeneityTable::drawRect(KDContext* ctx, KDRect rect) const {
+  CategoricalTableCell::drawRect(ctx, rect);
+  // Draw over the next cell border to hide it
+  ctx->fillRect(KDRect(0, bounds().height() - Metric::CellSeparatorThickness,
+                       bounds().width(), Metric::CellSeparatorThickness),
+                ColorPicker::Resolve(m_selectableTableView.backgroundColor()));
+}
+
+void ResultsHomogeneityTable::fillCellForLocation(Escher::HighlightCell* cell,
+                                                  int column, int row) {
+  if (m_mode == Mode::ExpectedValue &&
+      ((column == 0 && row == innerNumberOfRows()) ||
+       (row == 0 && column == innerNumberOfColumns()))) {
+    // Override to display "Total" instead
+    InferenceEvenOddBufferCell* myCell =
+        static_cast<InferenceEvenOddBufferCell*>(cell);
+    myCell->setAlignment(KDGlyph::k_alignCenter, KDGlyph::k_alignCenter);
+    myCell->setText(I18n::translate(I18n::Message::Total));
+    myCell->setEven(row % 2 == 0);
+  } else {
+    HomogeneityTableDataSource::fillCellForLocation(cell, column, row);
+  }
+}
+
+void ResultsHomogeneityTable::fillInnerCellForLocation(
+    Escher::HighlightCell* cell, int column, int row) {
+  InferenceEvenOddBufferCell* myCell =
+      static_cast<InferenceEvenOddBufferCell*>(cell);
+
+  double value;
+  if (m_mode == Mode::ExpectedValue) {
+    if (column == m_inference->numberOfDataColumns() &&
+        row == m_inference->numberOfDataRows()) {
+      value = m_inference->total();
+    } else if (column == m_inference->numberOfDataColumns()) {
+      value = m_inference->rowTotal(row);
+    } else if (row == m_inference->numberOfDataRows()) {
+      value = m_inference->columnTotal(column);
+    } else {
+      value = m_inference->dataValueAtLocation(Chi2Test::DataType::Expected,
+                                               column, row);
+    }
+  } else {
+    assert(m_mode == Mode::Contribution);
+    value = m_inference->dataValueAtLocation(Chi2Test::DataType::Contribution,
+                                             column, row);
+  }
+  PrintValueInTextHolder(value, myCell);
+  myCell->setEven(row % 2 == 1);
+}
+
+CategoricalController* ResultsHomogeneityTable::categoricalController() {
+  return m_resultsTableController;
+}
+
+}  // namespace Inference

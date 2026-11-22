@@ -1,0 +1,28 @@
+#pragma once
+
+#include <poincare/layout.h>
+
+#include "one_parameter_distribution.h"
+
+namespace Distributions {
+
+class StudentDistribution : public OneParameterDistribution {
+ public:
+  StudentDistribution()
+      : OneParameterDistribution(Poincare::Distribution::Type::Student) {
+    computeCurveViewRange();
+  }
+  I18n::Message title() const override {
+    return I18n::Message::StudentDistribution;
+  }
+  bool authorizedParameterAtIndex(double x, int index) const override;
+
+ private:
+  // Some values evaluate to NaN starting from 1e6, use safe 1e5 limit.
+  constexpr static double k_maxParameter = 1e5;
+  I18n::Message messageForParameterAtIndex(int index) const override {
+    return I18n::Message::DegreesOfFreedomDefinition;
+  }
+};
+
+}  // namespace Distributions

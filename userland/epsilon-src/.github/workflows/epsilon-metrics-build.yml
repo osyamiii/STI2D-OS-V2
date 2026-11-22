@@ -1,0 +1,31 @@
+name: Epsilon
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'tests/**'
+      - '**/scandium/**'
+      - 'ion/src/simulator/**'
+      - 'external_apps/**'
+
+concurrency:
+  group: ${{ github.workflow }}-Epsilon-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAKEFLAGS: -j2
+
+jobs:
+  binary-size:
+    name: build metrics
+    uses: ./.github/workflows/metrics-build.yml
+    with:
+      project-path: epsilon
+      platform: n0120
+      elfs-if-core: bootloader/bootloader.elf kernel/kernel.onboarding.beta.allow3rdparty.A.elf
+      elfs: userland.onboarding.beta.allow3rdparty.A.elf
+      elfs-summary-if-core: kernel/kernel.onboarding.beta.allow3rdparty.A.elf
+      elfs-summary: userland.onboarding.beta.allow3rdparty.A.elf
+      elf-bloaty: userland.onboarding.beta.allow3rdparty.A.elf
+      app-sizes: true

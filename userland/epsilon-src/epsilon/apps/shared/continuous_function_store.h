@@ -1,0 +1,163 @@
+#pragma once
+
+#include <escher/theme/components.h>
+#include <omg/global_box.h>
+
+#include "continuous_function.h"
+#include "function_store.h"
+
+namespace Shared {
+
+class ContinuousFunctionStore : public FunctionStore {
+  friend class OMG::GlobalBox<ContinuousFunctionStore>;
+  friend class ContinuousFunctionStoreTestBuilder;
+
+ public:
+  // Very large limit, so that record IDs in name can't exceed two chars.
+  constexpr static int k_maxNumberOfModels = 100;
+  constexpr static int k_maxNumberOfMemoizedModels = 10;
+  bool memoizationOverflows() const {
+    return numberOfModels() > maxNumberOfMemoizedModels();
+  }
+
+  static bool IsFunctionAreaCompatible(const ExpressionModelHandle* model,
+                                       const void* context) {
+    return IsFunctionActiveInPlot(model, context) &&
+           static_cast<const ContinuousFunction*>(model)->canComputeArea();
+  }
+
+  int numberOfActiveFunctionsInTable() const {
+    return numberOfModelsSatisfyingTest(&IsFunctionActiveInTable, nullptr);
+  }
+  void removeModel(Ion::Storage::Record record) override;
+  // Remove all functions and memoized functions.
+  void removeAll() override;
+  bool displaysOnlyCartesianFunctions(int* nbActiveFunctions = nullptr) const;
+  int numberOfActiveFunctionsInTableOfSymbolType(
+      ContinuousFunctionProperties::SymbolType symbolType) const {
+    return numberOfModelsSatisfyingTest(&IsFunctionActiveInTableOfSymbolType,
+                                        &symbolType);
+  }
+  typedef bool (ContinuousFunctionProperties::*HasProperty)() const;
+  /* For ContinuousFunction, we count only active functions in plot because
+   * derivatives can be active and yet not handled in plot. For the table,
+   * numberOfActiveFunctionsInTable should be used. */
+  int numberOfActiveFunctions() const override;
+  Ion::Storage::Record activeRecordAtIndex(int i) const override {
+    return recordSatisfyingTestAtIndex(i, &IsFunctionActiveInPlot, nullptr);
+  }
+  int numberOfActiveFunctionsWithProperty(HasProperty propertyFunction) const {
+    return numberOfModelsSatisfyingTest(&IsFunctionActiveInPlotAndHasProperty,
+                                        &propertyFunction);
+  }
+  int numberOfIntersectableFunctions() const {
+    return numberOfModelsSatisfyingTest(&IsFunctionIntersectable, nullptr);
+  }
+  int numberOfInequalityFunctions() const {
+    return numberOfModelsSatisfyingTest(&IsFunctionActiveInequality, nullptr);
+  }
+  int numberOfAreaCompatibleFunctions() const {
+    return numberOfModelsSatisfyingTest(&IsFunctionAreaCompatible, nullptr);
+  }
+  Ion::Storage::Record activeRecordInTableAtIndex(int i) const {
+    return recordSatisfyingTestAtIndex(i, &IsFunctionActiveInTable, nullptr);
+  }
+  Ion::Storage::Record activeRecordOfSymbolTypeInTableAtIndex(
+      ContinuousFunctionProperties::SymbolType symbolType, int i) const {
+    return recordSatisfyingTestAtIndex(i, &IsFunctionActiveInTableOfSymbolType,
+                                       &symbolType);
+  }
+  OMG::ExpiringPointer<ContinuousFunction> modelForRecord(
+      Ion::Storage::Record record) {
+    return OMG::ExpiringPointer<ContinuousFunction>(
+        static_cast<ContinuousFunction*>(privateModelForRecord(record)));
+  }
+  OMG::ExpiringPointer<const ContinuousFunction> modelForRecord(
+      Ion::Storage::Record record) const {
+    return OMG::ExpiringPointer<const ContinuousFunction>(
+        static_cast<const ContinuousFunction*>(privateModelForRecord(record)));
+  }
+  // Tidy the cache of all memoized models
+  void tidyCaches() const;
+  void setCachesContainer(CachesContainer* container) {
+    m_cachesContainer = container;
+  }
+  ContinuousFunctionCache* cacheAtIndex(int i) const {
+    return (m_cachesContainer && i < CachesContainer::k_numberOfAvailableCaches)
+               ? m_cachesContainer->cacheAtIndex(i)
+               : nullptr;
+  }
+
+  Escher::ThemeComponent colorForNewModel() const;
+  ContinuousFunction newModel(const char* name,
+                              Ion::Storage::Record::ErrorStatus* error);
+  Ion::Storage::Record::ErrorStatus addEmptyModel() override;
+  Ion::Storage::Record::ErrorStatus addDerivativeModel(
+      const Ion::Storage::Record parentRecord, uint8_t order);
+  int maxNumberOfModels() const override { return k_maxNumberOfModels; }
+
+ private:
+  /* ContinuousFunctionStore is a singleton. The unique instance can be accessed
+   * through GlobalContextAccessor */
+  ContinuousFunctionStore() = default;
+
+  static bool IsFunctionActiveInPlot(const ExpressionModelHandle* model,
+                                     const void* context) {
+    return IsFunctionActive(model, context) &&
+           static_cast<const ContinuousFunction*>(model)->isActiveInPlot();
+  }
+  int numberOfActiveFunctionsInPlot() const {
+    return numberOfModelsSatisfyingTest(&IsFunctionActiveInPlot, nullptr);
+  }
+  static bool IsFunctionActiveInTable(const ExpressionModelHandle* model,
+                                      const void* context) {
+    // An active function must be defined
+    return IsFunctionActive(model, context) &&
+           static_cast<const ContinuousFunction*>(model)->isActiveInTable();
+  }
+  static bool IsFunctionActiveInPlotAndHasProperty(
+      const ExpressionModelHandle* model, const void* context) {
+    HasProperty propertyFunction = *static_cast<const HasProperty*>(context);
+    return IsFunctionActiveInPlot(model, context) &&
+           (static_cast<const ContinuousFunction*>(model)->properties().*
+            propertyFunction)();
+  }
+  static bool IsFunctionActiveInTableOfSymbolType(
+      const ExpressionModelHandle* model, const void* context) {
+    ContinuousFunctionProperties::SymbolType symbolType =
+        *static_cast<const ContinuousFunctionProperties::SymbolType*>(context);
+    return IsFunctionActiveInTable(model, context) &&
+           symbolType == static_cast<const ContinuousFunction*>(model)
+                             ->properties()
+                             .symbolType();
+  }
+  static bool IsFunctionActiveInequality(const ExpressionModelHandle* model,
+                                         const void* context) {
+    return static_cast<const ContinuousFunction*>(model)->isActiveInequality();
+  }
+  static bool IsFunctionIntersectable(const ExpressionModelHandle* model,
+                                      const void* context) {
+    return static_cast<const ContinuousFunction*>(model)
+        ->shouldDisplayIntersections();
+  }
+  int maxNumberOfMemoizedModels() const override {
+    return k_maxNumberOfMemoizedModels;
+  }
+  const char* modelExtension() const override {
+    return Ion::Storage::functionExtension;
+  }
+  ExpressionModelHandle* setMemoizedModelAtIndex(
+      int cacheIndex, Ion::Storage::Record record) const override;
+  ExpressionModelHandle* memoizedModelAtIndex(int cacheIndex) const override;
+
+  void fillLastFreeColors(bool* colorIsFree) const;
+
+  mutable uint32_t m_storageCheckSum;
+  mutable int m_memoizedNumberOfActiveFunctionsInPlot;
+  mutable ContinuousFunction m_functions[k_maxNumberOfMemoizedModels];
+  CachesContainer* m_cachesContainer;
+};
+
+using ContinuousFunctionContext = const ContinuousFunctionStore;
+
+}  // namespace Shared

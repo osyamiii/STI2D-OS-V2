@@ -1,0 +1,16 @@
+{
+  "name": "STI2D-OS",
+  "short_name": "STI2D-OS",
+  "description": "Bibliothèque, personnalisation et installation pour NumWorks.",
+  "lang": "fr",
+  "start_url": "./index.html#accueil",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b0c0f",
+  "theme_color": "#0b0c0f",
+  "icons": [
+    { "src": "assets/favicon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

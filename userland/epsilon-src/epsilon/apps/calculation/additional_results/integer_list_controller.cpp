@@ -1,0 +1,79 @@
+#include "integer_list_controller.h"
+
+#include <apps/shared/poincare_helpers.h>
+#include <poincare/additional_results_helper.h>
+#include <poincare/k_tree.h>
+
+#include "../app.h"
+#include "poincare/symbol_context.h"
+
+using namespace Poincare;
+using namespace Shared;
+
+namespace Calculation {
+
+OMG::Base baseAtIndex(int index) {
+  switch (index) {
+    case 0:
+      return OMG::Base::Decimal;
+    case 1:
+      return OMG::Base::Hexadecimal;
+    default:
+      assert(index == 2);
+      return OMG::Base::Binary;
+  }
+}
+
+void IntegerListController::computeAdditionalResults(
+    const UserExpression& input, const UserExpression& exactOutput,
+    const UserExpression& approximateOutput) {
+  static_assert(
+      k_maxNumberOfRows >= k_indexOfFactorExpression + 1,
+      "k_maxNumberOfRows must be greater than k_indexOfFactorExpression");
+  const UserExpression integer =
+      AdditionalResultsHelper::EquivalentInteger(exactOutput);
+  for (int index = 0; index < k_indexOfFactorExpression; ++index) {
+    m_layouts[index] = integer.createLayout(
+        Preferences::PrintFloatMode::Decimal,
+        Preferences::LargeNumberOfSignificantDigits, EmptySymbolContext{},
+        baseAtIndex(index), App::k_useTenPower);
+  }
+  // Computing factorExpression
+  UserExpression factor = UserExpression::Create(KFactor(KA), {.KA = integer});
+  assert(complexFormat() == factor.preferredComplexFormat(
+                                complexFormat(), App::app()->localContext(),
+                                SymbolicComputation::ReplaceDefinedSymbols));
+  bool reductionFailure = false;
+  factor = factor.cloneAndSimplify(
+      SimplificationParameters{
+          .user = {.complexFormat = complexFormat(),
+                   .angleUnit = angleUnit(),
+                   .context = App::app()->localContext()},
+          .projectionPolicy = {.symbolic =
+                                   SymbolicComputation::ReplaceDefinedSymbols},
+          .reductionPolicy = {.target = ReductionTarget::User},
+      },
+      &reductionFailure);
+  if (!reductionFailure && !factor.isUndefined() &&
+      !factor.tree()->treeIsIdenticalTo(1_e) &&
+      !factor.tree()->treeIsIdenticalTo(0_e)) {
+    m_layouts[k_indexOfFactorExpression] = PoincareHelpers::CreateLayout(
+        factor, App::app()->localContext(), App::k_useTenPower);
+  }
+}
+
+I18n::Message IntegerListController::messageAtIndex(int index) {
+  switch (index) {
+    case 0:
+      return I18n::Message::Decimal;
+    case 1:
+      return I18n::Message::HexadecimalBase;
+    case 2:
+      return I18n::Message::BinaryBase;
+    default:
+      assert(index == 3);
+      return I18n::Message::PrimeFactors;
+  }
+}
+
+}  // namespace Calculation

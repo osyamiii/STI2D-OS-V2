@@ -1,0 +1,169 @@
+#ifndef LIBAXX_ALGORITHM
+#define LIBAXX_ALGORITHM
+
+#include <functional>
+#include <initializer_list>
+#include <utility>
+
+namespace std {
+
+template <class T>
+inline constexpr const T& min(const T& a, const T& b) {
+  return (b < a) ? b : a;
+}
+
+template <class T>
+inline constexpr const T& max(const T& a, const T& b) {
+  return (b > a) ? b : a;
+}
+
+template <class T>
+inline constexpr const T& clamp(const T& v, const T& lo, const T& hi) {
+  return (v < lo) ? lo : (v > hi) ? hi : v;
+}
+
+template <class T>
+inline constexpr T actionOnList(std::initializer_list<T> ilist,
+                                const T& (*Method)(const T& a, const T& b)) {
+  T m = *ilist.begin();
+  for (T elt : ilist) {
+    m = Method(m, elt);
+  }
+  return m;
+}
+
+template <class T>
+inline constexpr T min(std::initializer_list<T> ilist) {
+  return actionOnList(ilist, std::min<T>);
+}
+
+template <class T>
+inline constexpr T max(std::initializer_list<T> ilist) {
+  return actionOnList(ilist, std::max<T>);
+}
+
+template <class Iterator, class UnaryFunction>
+UnaryFunction for_each(Iterator first, Iterator last, UnaryFunction function) {
+  while (first != last) {
+    function(*first);
+    first++;
+  }
+  return function;
+}
+
+template <class InputIterator, class OutputIterator, class UnaryFunction>
+void transform(InputIterator first, InputIterator last, OutputIterator out,
+               UnaryFunction function) {
+  while (first != last) {
+    *out = function(*first);
+    first++;
+    out++;
+  }
+}
+
+/* Returns an iterator to the first found element comparing equal to "value" in
+ * the container between "first" and "last" (last is not included). If no
+ * element matches "value", returns the "last" iterator. */
+template <class Iterator, class T>
+Iterator find(Iterator first, Iterator last, const T& value) {
+  while (first != last) {
+    if (*first == value) {
+      return first;
+    }
+    first++;
+  }
+  return last;
+}
+
+/* Returns an iterator to the first found element for which "predicate(element)"
+ * returns true in the container between "first" and "last" (last is not
+ * included). If no element matches the predicate, returns the "last" iterator.
+ */
+template <class Iterator, class UnaryPredicate>
+Iterator find_if(Iterator first, Iterator last, UnaryPredicate predicate) {
+  while (first != last) {
+    if (predicate(*first)) {
+      return first;
+    }
+    first++;
+  }
+  return last;
+}
+
+template <class Iterator, class Comparator>
+constexpr Iterator extremum_element(Iterator first, Iterator end,
+                                    Comparator comparator, bool isMin) {
+  if (first == end) {
+    return end;
+  }
+  Iterator result = first;
+  while (++first != end) {
+    if (isMin ? comparator(*first, *result) : comparator(*result, *first)) {
+      result = first;
+    }
+  }
+  return result;
+}
+
+template <class Iterator, class Comparator>
+constexpr Iterator max_element(Iterator first, Iterator end,
+                               Comparator comparator) {
+  return extremum_element(first, end, comparator, false);
+}
+
+template <class Iterator>
+constexpr Iterator max_element(Iterator first, Iterator end) {
+  return extremum_element(first, end, std::less{}, false);
+}
+
+template <class Iterator, class Comparator>
+constexpr Iterator min_element(Iterator first, Iterator end,
+                               Comparator comparator) {
+  return extremum_element(first, end, comparator, true);
+}
+
+template <class Iterator>
+constexpr Iterator min_element(Iterator first, Iterator end) {
+  return extremum_element(first, end, std::less{}, true);
+}
+
+template <class T>
+void swap(T& a, T& b) {
+  T temp = std::move(a);
+  a = std::move(b);
+  b = std::move(temp);
+}
+
+template <class InputIterator, class OutputIterator>
+OutputIterator copy(InputIterator inputFirst, InputIterator inputLast,
+                    OutputIterator outputFirst) {
+  while (inputFirst != inputLast) {
+    *outputFirst = *inputFirst;
+    outputFirst++;
+    inputFirst++;
+  }
+  return outputFirst;
+}
+
+template <class Iterator, class T>
+void fill(Iterator first, Iterator last, const T& value) {
+  while (first != last) {
+    *first = value;
+    first++;
+  }
+}
+
+template <class InputIterator, class OutputIterator>
+OutputIterator move(InputIterator inputFirst, InputIterator inputLast,
+                    OutputIterator outputFirst) {
+  while (inputFirst != inputLast) {
+    *outputFirst = std::move(*inputFirst);
+    outputFirst++;
+    inputFirst++;
+  }
+  return outputFirst;
+}
+
+}  // namespace std
+
+#endif

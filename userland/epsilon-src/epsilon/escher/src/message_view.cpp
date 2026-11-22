@@ -1,0 +1,54 @@
+#include <assert.h>
+#include <escher/message_view.h>
+#include <escher/theme/color_picker.h>
+
+namespace Escher {
+
+MessageView::MessageView(const I18n::Message* messages,
+                         const ThemeComponent* colors, uint8_t numberOfMessages)
+    : m_messageTextViews(std::min(numberOfMessages, k_maxNumberOfMessages)) {
+  for (uint8_t i = 0; i < m_messageTextViews.size(); i++) {
+    m_messageTextViews[i].setFont(i == 0 ? KDFont::Size::Large
+                                         : KDFont::Size::Small);
+    m_messageTextViews[i].setMessage(messages[i]);
+    m_messageTextViews[i].setAlignment(KDGlyph::k_alignCenter,
+                                       KDGlyph::k_alignCenter);
+    m_messageTextViews[i].setTextColor(colors[i]);
+  }
+}
+
+void MessageView::drawRect(KDContext* ctx, KDRect rect) const {
+  ctx->fillRect(bounds(),
+                ColorPicker::Resolve(ThemeComponent::DefaultCellBackground));
+}
+
+View* MessageView::subviewAtIndex(int index) {
+  assert(index >= 0);
+  if (index >= static_cast<int>(m_messageTextViews.size())) {
+    assert(false);
+    return nullptr;
+  }
+  return &(m_messageTextViews[index]);
+}
+
+void MessageView::layoutSubviews(bool force) {
+  if (m_messageTextViews.size() == 0) {
+    return;
+  }
+  KDCoordinate width = bounds().width();
+  KDCoordinate titleHeight =
+      m_messageTextViews[0].minimalSizeForOptimalDisplay().height();
+  KDCoordinate textHeight = KDFont::GlyphHeight(KDFont::Size::Small);
+  setChildFrame(&m_messageTextViews[0],
+                KDRect(0, k_titleMargin, width, titleHeight), force);
+  const KDCoordinate paragraphHeight =
+      k_titleMargin + titleHeight + k_paragraphMargin;
+  for (uint8_t i = 1; i < m_messageTextViews.size(); i++) {
+    setChildFrame(
+        &m_messageTextViews[i],
+        KDRect(0, paragraphHeight + (i - 1) * textHeight, width, textHeight),
+        force);
+  }
+}
+
+}  // namespace Escher

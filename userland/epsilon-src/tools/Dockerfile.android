@@ -1,0 +1,24 @@
+# Dockerfile used by the CI
+
+FROM debian:trixie-slim
+
+WORKDIR /runner
+
+RUN echo 'APT::Get::Assume-Yes "true";' > /etc/apt/apt.conf.d/assume-yes && \
+    apt-get update && \
+    apt-get upgrade && \
+    apt-get install --no-install-recommends sudo
+
+COPY tools/setup.sh tools/setup.sh
+
+RUN tools/setup.sh --ci
+
+RUN apt-get install sdkmanager openjdk-17-jdk
+
+# For some reason gradle decides to install the second build-tools version
+RUN sdkmanager "ndk;28.2.13676358" "platforms;android-35" "build-tools;30.0.2" "build-tools;35.0.0"
+
+ENV PYTHON=/runner/.venv/bin/python
+ENV ANDROID_HOME=/opt/android-sdk
+
+WORKDIR /monorepo

@@ -1,0 +1,190 @@
+#pragma once
+
+#include <omg/global_box.h>
+#include <omg/memory.h>
+#include <stddef.h>
+#include <string.h>
+
+#include "pool_object.h"
+#if POINCARE_TREE_LOG
+#include <iostream>
+#endif
+
+namespace Poincare {
+
+#if __EMSCRIPTEN__
+/* Emscripten memory representation assumes loads and stores are aligned.
+ * Because the Pool buffer is going to store double values, Object addresses
+ * have to be aligned on 8 bytes (provided that emscripten addresses are 8 bytes
+ * long which ensures that v-tables are also aligned). */
+typedef uint64_t AlignedObjectBuffer;
+#else
+/* Memory copies are done quicker on 4 bytes aligned data. We force the Pool
+ * to allocate 4-byte aligned range to leverage this. */
+typedef uint32_t AlignedObjectBuffer;
+#endif
+constexpr static int ByteAlignment = sizeof(AlignedObjectBuffer);
+
+static_assert(sizeof(PoolObject) % ByteAlignment == 0 &&
+                  sizeof(PoolObject) >= ByteAlignment,
+              "PoolObject size should be a multiple of ByteAlignment");
+
+class PoolHandle;
+
+class Pool final {
+  friend class PoolObject;
+  friend class PoolHandle;
+  friend class PoolCheckpoint;
+
+ public:
+  /* NOTE Tracking is required because its content can be corrupted by an
+     external apps or a python environment heap usage */
+  static OMG::TrackedGlobalBox<Pool> sharedPool
+#if PLATFORM_DEVICE
+      __attribute__((section(".bss.$poincare_pool")))
+#endif
+      ;
+  static void Lock() {
+#if ASSERTIONS
+    s_treePoolLocked = true;
+#endif
+  }
+  static void Unlock() {
+#if ASSERTIONS
+    s_treePoolLocked = false;
+#endif
+  }
+
+  Pool() : m_cursor(buffer()) { unregisterAllObjects(); }
+
+  PoolObject* cursor() const { return reinterpret_cast<PoolObject*>(m_cursor); }
+  size_t size() const { return m_cursor - constBuffer(); }
+
+  // Object
+  PoolObject* object(uint16_t identifier) const {
+    assert(PoolObject::IsValidIdentifier(identifier) &&
+           identifier < MaxNumberOfObjects);
+    if (m_objectOffset[identifier] != UINT16_MAX) {
+      return const_cast<PoolObject*>(reinterpret_cast<const PoolObject*>(
+          m_alignedBuffer + m_objectOffset[identifier]));
+    }
+    return nullptr;
+  }
+
+  // Pool memory
+  void* alloc(size_t size);
+  PoolObject* copyObjectFromAddress(const void* address, size_t size);
+
+#if POINCARE_TREE_LOG
+  void flatLog(std::ostream& stream);
+  void treeLog(std::ostream& stream, bool verbose = true);
+  __attribute__((__used__)) void log() { treeLog(std::cout, false); }
+  __attribute__((__used__)) void verboseLog() { treeLog(std::cout, true); }
+#endif
+  int numberOfObjects() const;
+
+ private:
+#ifdef SMALL_POINCARE_POOL
+  constexpr static int BufferSize = 32768;
+#else
+  /* 32kb (previous size) + 8kb (newly available size) - 4kb (allowed by
+   * Poincare update). This can still be increased if needed */
+  constexpr static int BufferSize = 32768 + 8192 - 4096;
+#endif
+  constexpr static int MaxNumberOfObjects = BufferSize / sizeof(PoolObject);
+  constexpr static int k_maxObjectOffset = BufferSize / ByteAlignment;
+#if ASSERTIONS
+  static bool s_treePoolLocked;
+#endif
+  // Object size, taking the pool alignment into account
+  static size_t AlignedSize(size_t size) {
+    return OMG::Memory::AlignedSize(size, ByteAlignment);
+  }
+
+  // Pool memory
+  void discardPoolObject(PoolObject* object);
+
+  // Identifiers
+  uint16_t nextFreeIdentifier() const;
+  void renamePoolObject(PoolObject* object) const {
+    object->rename(nextFreeIdentifier());
+  }
+  bool isRegistered(uint16_t identifier) const {
+    return PoolObject::IsValidIdentifier(identifier) &&
+           m_objectOffset[identifier] != UINT16_MAX;
+  }
+
+  // Registers the object identifier
+  void registerObject(PoolObject* object);
+  // Frees the object identifier
+  void unregisterObject(PoolObject* object);
+  // Reset m_objectOffset for all identifiers
+  void unregisterAllObjects();
+  // Registers all objects downstream of the given object, including itself
+  void registerDownstreamObject(PoolObject* object);
+  /* Unregisters all objects downstream of the given object, including itself,
+   * and moves the pool cursor to the given address */
+  void freeDownstreamObject(PoolObject* firstObjectToDiscard);
+
+  char* buffer() { return reinterpret_cast<char*>(m_alignedBuffer); }
+  const char* constBuffer() const {
+    return reinterpret_cast<const char*>(m_alignedBuffer);
+  }
+
+  // Return next object
+  static PoolObject* NextObject(PoolObject* object) {
+    /* Simple version would be "return this + 1;", with pointer arithmetics
+     * taken care of by the compiler. Unfortunately, we want PoolObject to have
+     * a VARIABLE size */
+    return reinterpret_cast<PoolObject*>(reinterpret_cast<char*>(object) +
+                                         AlignedSize(object->size()));
+  }
+
+  // Iterators
+  PoolObject* first() const {
+    return reinterpret_cast<PoolObject*>(const_cast<char*>(constBuffer()));
+  }
+  PoolObject* last() const {
+    return reinterpret_cast<PoolObject*>(const_cast<char*>(m_cursor));
+  }
+  class Iterator {
+   public:
+    Iterator(const PoolObject* object)
+        : m_object(const_cast<PoolObject*>(object)) {}
+    PoolObject* operator*() { return m_object; }
+    Iterator& operator++() {
+      m_object = NextObject(m_object);
+      return *this;
+    }
+    bool operator!=(const Iterator& it) const {
+      return (m_object != it.m_object);
+    }
+
+   protected:
+    PoolObject* m_object;
+  };
+
+  class Objects final {
+   public:
+    Objects(PoolObject* object) : m_object(object) {}
+    Iterator begin() const { return Iterator(m_object); }
+    Iterator end() const { return Iterator(Pool::sharedPool->last()); }
+
+   private:
+    PoolObject* m_object;
+  };
+  Objects allObjects() const { return Objects(first()); }
+
+  AlignedObjectBuffer m_alignedBuffer[BufferSize / ByteAlignment];
+  char* m_cursor;
+  // Index is object identifier, value is offset of the object in the pool
+  uint16_t m_objectOffset[MaxNumberOfObjects];
+  // Memoize the last attributed identifier to speed up future searches
+  mutable uint16_t m_lastIdentifier = MaxNumberOfObjects;
+  static_assert(k_maxObjectOffset < UINT16_MAX &&
+                    sizeof(m_objectOffset[0]) == sizeof(uint16_t),
+                "The tree pool object offsets in m_objectOffset "
+                "cannot be written with the chosen data size (uint16_t)");
+};
+
+}  // namespace Poincare

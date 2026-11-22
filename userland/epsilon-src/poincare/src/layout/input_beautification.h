@@ -1,0 +1,322 @@
+#pragma once
+
+#include <poincare/preferences.h>
+#include <poincare/src/expression/aliases.h>
+#include <poincare/src/expression/builtin.h>
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/tree_ref.h>
+
+#include <array>
+
+#include "k_tree.h"
+#include "layout_cursor.h"
+
+namespace Poincare::Internal {
+using BeautifiedLayoutBuilder = Tree* (*)(TreeRef* parameters);
+
+struct BeautificationRule {
+  Aliases listOfBeautifiedAliases;
+  int numberOfParameters;
+  BeautifiedLayoutBuilder layoutBuilder;
+};
+
+template <AnyType type, AnyType layoutType>
+consteval static BeautificationRule ruleHelper() {
+  static_assert(TypeBlock::NumberOfChildren(type) ==
+                TypeBlock::NumberOfChildren(layoutType));
+  return BeautificationRule{
+      *Builtin::GetReservedFunction(Type(type))->aliases(),
+      TypeBlock::NumberOfChildren(type), [](TreeRef* parameters) -> Tree* {
+        TreeRef ref = SharedTreeStack->pushBlock(layoutType);
+        for (int i = 0; i < TypeBlock::NumberOfChildren(layoutType); i++) {
+          parameters[i]->detachTree();
+        }
+        return ref;
+      }};
+}
+
+class InputBeautification {
+ public:
+  struct BeautificationMethod {
+    bool beautifyIdentifiersBeforeInserting;
+    bool beautifyAfterInserting;
+  };
+
+  static BeautificationMethod BeautificationMethodWhenInsertingLayout(
+      const Tree* insertedLayout);
+
+  /* Both of the following functions return true if layouts were beautified.
+   *
+   * BeautifyLeftOfCursorBeforeCursorMove will only apply the
+   * k_simpleIdentifiersRules. This is called either:
+   *    - When moving out of an horizontal layout.
+   *    - Just before inserting a non-identifier char.
+   *
+   * BeautifyLeftOfCursorAfterInsertion will apply:
+   *    - k_onInsertionRules (all combinations of chars that are beautified
+   *      immediately when inserted).
+   *    - k_logarithmRule and k_identifiersRules (if a left parenthesis was
+   *      just inserted).
+   *    - BeautifyPipeKey, BeautifyFractionIntoDerivative and
+   *      BeautifyFirstOrderDerivativeIntoNthOrder.
+   * This is called only after an insertion, if the relevant char was inserted.
+   */
+  static bool BeautifyLeftOfCursorBeforeCursorMove(
+      LayoutCursor* layoutCursor, const Poincare::SymbolContext& symbolContext);
+  static bool BeautifyLeftOfCursorAfterInsertion(
+      LayoutCursor* layoutCursor, const Poincare::SymbolContext& symbolContext);
+  static bool LayoutIsIdentifierMaterial(const Tree* l);
+
+ private:
+  constexpr static int k_maxNumberOfParameters = 4;
+
+  constexpr static const BeautificationRule k_symbolsRules[] = {
+      // Comparison operators
+      {"<=", 0,
+       [](TreeRef* parameters) -> Tree* {
+         // TODO factorize the comparison operators once we have them in PCJ
+         return "≤"_cl->cloneTree();
+       }},
+      {">=", 0, [](TreeRef* parameters) { return "≥"_cl->cloneTree(); }},
+      {"!=", 0,
+       [](TreeRef* parameters) {
+         // ≠
+         return KCombinedCodePointL<'=',
+                                    UCodePointCombiningLongSolidusOverlay>()
+             ->cloneTree();
+       }},
+// Special char
+#if POINCARE_RIGHTWARDS_ARROW
+      {"->", 0, [](TreeRef* parameters) { return "→"_cl->cloneTree(); }},
+#endif
+      {"*", 0, [](TreeRef* parameters) { return "×"_cl->cloneTree(); }},
+      {"''", 0,
+       [](TreeRef* parameters) { return KCodePointL<u'"'>()->cloneTree(); }},
+  };
+
+  constexpr static BeautificationRule k_infRule = {
+      "inf", 0, [](TreeRef* parameters) { return "∞"_cl->cloneTree(); }};
+
+  constexpr static BeautificationRule k_piRule = {
+      "pi", 0, [](TreeRef* parameters) { return "π"_cl->cloneTree(); }};
+  constexpr static BeautificationRule k_thetaRule = {
+      "theta", 0, [](TreeRef* parameters) { return "θ"_cl->cloneTree(); }};
+
+  constexpr static BeautificationRule k_absoluteValueRule =
+      ruleHelper<Type::Abs, Type::AbsLayout>();
+
+  constexpr static BeautificationRule k_derivativeRule = {
+      "diff", 3, [](TreeRef* parameters) -> Tree* {
+        TreeRef diff = KDiffL->cloneNode();
+        parameters[1]->detachTree();
+        parameters[2]->detachTree();
+        "1"_l->cloneTree();
+        parameters[0]->detachTree();
+        if (RackLayout::IsEmpty(parameters[1])) {
+          NAry::AddChildAtIndex(parameters[1], "x"_cl->cloneTree(), 0);
+        }
+        return diff;
+      }};
+
+  /* WARNING 1: The following arrays (k_simpleIdentifiersRules and
+   * k_identifiersRules) will be beautified only if the expression can be parsed
+   * without being beautified. If you add any new identifiers to one of these
+   * lists, they must be parsable. This is because we must be able to
+   * distinguish "asqrt" = "a*sqrt" from "asqlt" != "a*sqlt".
+   *
+   * WARNING 2: These need to be sorted in alphabetical order like in
+   * parsing/helper.h:
+   * "If the function has multiple aliases, take the first alias
+   * in alphabetical order to choose position in list." */
+  constexpr static const BeautificationRule k_simpleIdentifiersRules[] = {
+      k_infRule, k_piRule,
+#if !POINCARE_SCANDIUM_LAYOUTS
+      // Scandium layouts don't support the theta glyph
+      k_thetaRule
+#endif
+  };
+  constexpr static size_t k_lenOfSimpleIdentifiersRules =
+      std::size(k_simpleIdentifiersRules);
+
+  // simpleIdentifiersRules are included in identifiersRules
+  constexpr static const BeautificationRule k_identifiersRules[] = {
+      /* abs( */ k_absoluteValueRule,
+      /* binomial( */
+      ruleHelper<Type::Binomial, Type::BinomialLayout>(),
+      /* ceil( */
+      ruleHelper<Type::Ceil, Type::CeilLayout>(),
+#if POINCARE_COMPLEX_BUILTINS
+      /* conj( */
+      ruleHelper<Type::Conj, Type::ConjLayout>(),
+#endif
+#if POINCARE_DIFF
+      /* diff( */ k_derivativeRule,
+#endif
+      {/* exp( */
+       "exp", 1,
+       [](TreeRef* parameters) -> Tree* {
+         TreeRef exp = ("e"_l ^ KSuperscriptL(""_l))->cloneTree();
+         exp->child(1)->child(0)->moveTreeOverTree(parameters[0]);
+         return exp;
+       }},
+      /* floor( */
+      ruleHelper<Type::Floor, Type::FloorLayout>(),
+      /* inf */ k_infRule,
+#if POINCARE_INTEGRAL
+      {/* int( */
+       "int", 4,
+       [](TreeRef* parameters) -> Tree* {
+         TreeRef integral = SharedTreeStack->pushIntegralLayout();
+         parameters[1]->detachTree();
+         parameters[2]->detachTree();
+         parameters[3]->detachTree();
+         parameters[0]->detachTree();
+         if (RackLayout::IsEmpty(parameters[1])) {
+           NAry::AddChildAtIndex(parameters[1], "x"_cl->cloneTree(), 0);
+         }
+         return integral;
+       }},
+#endif
+#if POINCARE_MATRIX
+      /* norm( */
+      ruleHelper<Type::Norm, Type::VectorNormLayout>(),
+#endif
+      /* pi */ k_piRule,
+#if POINCARE_PIECEWISE
+      {/* piecewise( */
+       "piecewise", 2,
+       [](TreeRef* parameters) -> Tree* {
+         /* WARNING: The implementation of ReplaceEmptyLayoutsWithParameters
+          * needs the created layout to have empty layouts where the
+          * parameters should be inserted. Since Piecewise operator does not
+          * have a fixed number of children, the implementation is not
+          * perfect. Indeed, if the layout_field is currently filled with
+          * "4, x>0, 5", and "piecewise(" is inserted left of it,
+          * "piecewise(4, x>0, 5)" won't be beautified, since the piecewise
+          * layout does not have 3 empty children. This is a fringe case
+          * though, and everything works fine when "piecewise(" is inserted
+          * with nothing on its right. */
+         TreeRef ref = SharedTreeStack->pushPiecewiseLayout(2, 2);
+         parameters[0]->detachTree();
+         parameters[1]->detachTree();
+         KRackL()->cloneTree();
+         KRackL()->cloneTree();
+         return ref;
+       }},
+#endif
+#if POINCARE_SUM_AND_PRODUCT
+      {/* product( */
+       "product", 4,
+       [](TreeRef* parameters) -> Tree* {
+         // TODO factorize with diff and int
+         TreeRef product = SharedTreeStack->pushProductLayout();
+         parameters[1]->detachTree();
+         parameters[2]->detachTree();
+         parameters[3]->detachTree();
+         parameters[0]->detachTree();
+         if (RackLayout::IsEmpty(parameters[1])) {
+           NAry::AddChildAtIndex(parameters[1], "k"_cl->cloneTree(), 0);
+         }
+         return product;
+       }},
+#endif
+      /* root( */
+      ruleHelper<Type::Root, Type::RootLayout>(),
+      /* sqrt( */
+      ruleHelper<Type::Sqrt, Type::SqrtLayout>(),
+#if !POINCARE_SCANDIUM_LAYOUTS
+      /* theta */ k_thetaRule
+#endif
+  };
+
+  constexpr static size_t k_lenOfIdentifiersRules =
+      std::size(k_identifiersRules);
+
+#if POINCARE_PT_COMBINATORICS_LAYOUTS
+  constexpr static const BeautificationRule k_specialCombinatoricsRules[] = {
+      /* binomial( */
+      ruleHelper<Type::Binomial, Type::PtBinomialLayout>(),
+      /* permute( */
+      ruleHelper<Type::Permute, Type::PtPermuteLayout>()};
+  constexpr static size_t k_lenOfSpecialCombinatoricsRules =
+      std::size(k_specialCombinatoricsRules);
+#endif
+
+  constexpr static BeautificationRule k_sumRule = {
+      "sum", 4, [](TreeRef* parameters) -> Tree* {
+        // TODO factorize with diff and int
+        TreeRef sum = SharedTreeStack->pushSumLayout();
+        parameters[1]->detachTree();
+        parameters[2]->detachTree();
+        parameters[3]->detachTree();
+        parameters[0]->detachTree();
+        if (RackLayout::IsEmpty(parameters[1])) {
+          NAry::AddChildAtIndex(parameters[1], "k"_cl->cloneTree(), 0);
+        }
+        return sum;
+      }};
+
+  constexpr static BeautificationRule k_logarithmRule = {
+      "log", 2, [](TreeRef* parameters) -> Tree* {
+        // TODO: factorize with Layouter and LayoutCursor
+        bool nlLog = SharedPreferences->logarithmBasePosition() ==
+                     Preferences::LogarithmBasePosition::TopLeft;
+        TreeRef log = "log"_l->cloneTree();
+        TreeRef base =
+            nlLog ? KPrefixSuperscriptL->cloneNode() : KSubscriptL->cloneNode();
+        parameters[1]->detachTree();
+        NAry::AddChildAtIndex(log, base, nlLog ? 0 : 3);
+        TreeRef abscissa = KParenthesesRightTempL->cloneNode();
+        parameters[0]->detachTree();
+        NAry::AddChild(log, abscissa);
+        return log;
+      }};
+  constexpr static int k_indexOfBaseOfLog = 1;
+
+  // All following methods return true if layout was beautified
+
+  /* Apply k_symbolsRules  */
+  static bool BeautifySymbols(Tree* rack, int rightmostIndexToBeautify,
+                              LayoutCursor* layoutCursor);
+
+  /* Apply the rules passed in rulesList as long as they match a tokenizable
+   * identifiers. */
+  static bool TokenizeAndBeautifyIdentifiers(
+      Tree* rack, int rightmostIndexToBeautify,
+      const BeautificationRule* rulesList, size_t numberOfRules,
+      const Poincare::SymbolContext& symbolContext, LayoutCursor* layoutCursor,
+      bool logBeautification = false);
+
+  static bool BeautifyPipeKey(Tree* rack, int indexOfPipeKey,
+                              LayoutCursor* cursor);
+
+  static bool BeautifyFractionIntoDerivative(Tree* rack, int indexOfFraction,
+                                             LayoutCursor* layoutCursor);
+  static bool BeautifyFirstOrderDerivativeIntoNthOrder(
+      Tree* rack, int indexOfSuperscript, LayoutCursor* layoutCursor);
+
+  static bool BeautifySum(Tree* rack, int indexOfComma,
+                          const Poincare::SymbolContext& symbolContext,
+                          LayoutCursor* layoutCursor);
+
+  static bool CompareAndBeautifyIdentifier(
+      const Tree* firstLayout, size_t identifierLength,
+      BeautificationRule beautificationRule, Tree* rack, int startIndex,
+      LayoutCursor* layoutCursor, int* comparisonResult,
+      int* numberOfLayoutsAddedOrRemoved);
+
+  static bool RemoveLayoutsBetweenIndexAndReplaceWithPattern(
+      Tree* rack, int startIndex, int endIndex,
+      BeautificationRule beautificationRule, LayoutCursor* layoutCursor,
+      int* numberOfLayoutsAddedOrRemoved = nullptr,
+      Tree* preProcessedParameter = nullptr,
+      int indexOfPreProcessedParameter = -1);
+
+  // Return false if there are too many parameters
+  static bool CreateParametersList(TreeRef* parameters, Tree* rack,
+                                   int parenthesisIndexInParent,
+                                   BeautificationRule beautificationRule,
+                                   LayoutCursor* layoutCursor);
+};
+
+}  // namespace Poincare::Internal

@@ -1,0 +1,174 @@
+#pragma once
+
+#include <escher/buffer_text_view.h>
+#include <escher/even_odd_cell.h>
+#include <escher/layout_view.h>
+#include <escher/metric.h>
+#include <escher/scrollable_view.h>
+
+namespace Escher {
+
+class AbstractScrollableMultipleLayoutsView
+    : public ScrollableView<ScrollView::ArrowDecorator>,
+      public ScrollViewDataSource,
+      public CellWidget {
+ public:
+  constexpr static KDCoordinate k_horizontalMargin = Metric::CommonLargeMargin;
+  enum class SubviewPosition : uint8_t { Left = 0, Center = 1, Right = 2 };
+
+  AbstractScrollableMultipleLayoutsView(Responder* parentResponder,
+                                        View* contentCell);
+  EvenOddCell* evenOddCell() { return contentCell(); }
+  virtual void setLayouts(const Poincare::Layout& formulaLayout,
+                          const Poincare::Layout& exactLayout,
+                          const Poincare::Layout& approximateLayout);
+  void resetLayouts() {
+    setSelectedSubviewPosition(SubviewPosition::Left);
+    setLayouts(Poincare::Layout(), Poincare::Layout(), Poincare::Layout());
+  }
+  void setComparisonSign(bool isEqual, bool isVisible) {
+    contentCell()->setComparisonSign(isEqual, isVisible);
+  }
+  SubviewPosition selectedSubviewPosition() {
+    return contentCell()->selectedSubviewPosition();
+  }
+  void setSelectedSubviewPosition(SubviewPosition subviewPosition) {
+    contentCell()->setSelectedSubviewPosition(subviewPosition);
+  }
+  bool displayCenter() const { return contentCell()->displayCenter(); }
+  void setDisplayCenter(bool display);
+  void setToggleableCenter(bool displayable) {
+    contentCell()->setToggleableCenter(displayable);
+  }
+  void reloadScroll();
+  bool handleEvent(Ion::Events::Event event) override;
+  const Poincare::Layout& layout() const override {
+    return contentCell()->layout();
+  }
+  const Poincare::Layout& layoutAtPosition(SubviewPosition position) const {
+    return contentCell()->layoutAtPosition(position);
+  }
+  KDCoordinate baseline() const { return contentCell()->baseline(); }
+
+  // CellWidget
+  const View* view() const override { return this; }
+  Responder* responder() override { return this; }
+  void setBackgroundColor(ThemeComponent color) override {
+    ScrollableView<ScrollView::ArrowDecorator>::setBackgroundColor(color);
+  }
+  void setHighlighted(bool highlighted) override;
+
+ protected:
+  class ContentCell : public EvenOddCell {
+   public:
+    ContentCell(float horizontalAlignment = KDGlyph::k_alignLeft,
+                KDFont::Size font = KDFont::Size::Large);
+    ThemeComponent backgroundColor() const override { return baseColor(); }
+    /* AbstractScrollableMultipleLayoutsView is filled with the even / odd
+     * color. Highlight is applied to the subviews only */
+    void drawRect(KDContext* ctx, KDRect rect) const override;
+    void setHighlighted(bool highlight) override;
+    virtual void reloadTextColor();
+    KDSize minimalSizeForOptimalDisplay() const override;
+    KDSize minimalSizeForOptimalDisplayFullSize() const;
+    KDFont::Size font() const {
+      assert(m_rightLayoutView.font() == m_centeredLayoutView.font());
+      return m_rightLayoutView.font();
+    }
+    virtual LayoutView* leftLayoutView() const { return nullptr; }
+    LayoutView* rightLayoutView() { return &m_rightLayoutView; }
+    LayoutView* centeredLayoutView() { return &m_centeredLayoutView; }
+    OneLineBufferTextView<>* comparisonSign() { return &m_comparisonSign; }
+    SubviewPosition selectedSubviewPosition() const {
+      return m_selectedSubviewPosition;
+    }
+    void setSelectedSubviewPosition(SubviewPosition subviewPosition);
+    bool canHaveLeftLayout() const { return leftLayoutView() != nullptr; }
+    bool displayLeftLayout() const {
+      return leftLayoutView() != nullptr &&
+             !leftLayoutView()->layout().isUninitialized();
+    }
+    bool displayComparisonSign() const {
+      // NOTE: If this assertion fails, the configuration is not handled.
+      assert(m_displayComparisonSign || !displayCenter() ||
+             !displayRightLayout());
+      return m_displayComparisonSign &&
+             (displayCenter() || !m_comparisonSignIsEqual) &&
+             displayRightLayout();
+    }
+    bool displayCenter() const {
+      return m_displayCenter &&
+             !m_centeredLayoutView.layout().isUninitialized();
+    }
+    bool displayRightLayout() const {
+      return !m_rightLayoutView.layout().isUninitialized();
+    }
+    bool displayableCenter() const {
+      return m_toggleableCenter &&
+             !m_centeredLayoutView.layout().isUninitialized();
+    }
+    bool comparisonSignIsEqual() const { return m_comparisonSignIsEqual; }
+    void setDisplayCenter(bool display);
+    void setToggleableCenter(bool displayable) {
+      m_toggleableCenter = displayable;
+    }
+    /* Even if isVisible is true, comparison sign can be hidden. See
+     * displayComparisonSign(). */
+    void setComparisonSign(bool isEqual, bool isVisible);
+    void layoutSubviews(bool force = false) override;
+    int numberOfSubviews() const override;
+    const Poincare::Layout& layout() const override {
+      return layoutAtPosition(m_selectedSubviewPosition);
+    }
+    const Poincare::Layout& layoutAtPosition(SubviewPosition position) const;
+    KDCoordinate baseline(KDCoordinate* leftBaseline = nullptr,
+                          KDCoordinate* centerBaseline = nullptr,
+                          KDCoordinate* rightBaseline = nullptr) const;
+    void subviewFrames(KDRect* leftFrame, KDRect* centerFrame,
+                       KDRect* comparisonSignFrame, KDRect* rightFrame);
+
+   protected:
+    void setHighlightWholeCell(bool highlightWholeCell) {
+      m_highlightWholeCell = highlightWholeCell;
+    };
+
+    bool m_highlightWholeCell = false;
+
+   private:
+    void updateSubviewsBackgroundAfterChangingState() override;
+    KDSize privateMinimalSizeForOptimalDisplay(bool forceFullDisplay) const;
+    View* subviewAtIndex(int index) override;
+    LayoutView m_rightLayoutView;
+    OneLineBufferTextView<> m_comparisonSign;
+    LayoutView m_centeredLayoutView;
+    SubviewPosition m_selectedSubviewPosition;
+    bool m_displayCenter;
+    bool m_toggleableCenter;
+    bool m_comparisonSignIsEqual;
+    bool m_displayComparisonSign;
+    float m_horizontalAlignment;
+  };
+  virtual ContentCell* contentCell() = 0;
+  virtual const ContentCell* contentCell() const = 0;
+};
+
+class ScrollableTwoLayoutsView : public AbstractScrollableMultipleLayoutsView {
+ public:
+  ScrollableTwoLayoutsView(Responder* parentResponder,
+                           float horizontalAlignment = KDGlyph::k_alignLeft,
+                           KDFont::Size font = KDFont::Size::Large)
+      : AbstractScrollableMultipleLayoutsView(parentResponder, &m_contentCell),
+        m_contentCell(horizontalAlignment, font) {
+    setMargins({Metric::CommonLargeMargin, Metric::CommonLargeMargin,
+                Metric::CommonSmallMargin, Metric::CommonSmallMargin});
+  }
+  KDSize minimalSizeForOptimalDisplayFullSize() const;
+  KDFont::Size font() const { return m_contentCell.font(); }
+
+ private:
+  ContentCell* contentCell() override { return &m_contentCell; };
+  const ContentCell* contentCell() const override { return &m_contentCell; };
+  ContentCell m_contentCell;
+};
+
+}  // namespace Escher

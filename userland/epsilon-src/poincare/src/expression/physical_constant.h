@@ -1,0 +1,38 @@
+#pragma once
+
+#include <assert.h>
+#include <poincare/src/layout/layout_span_decoder.h>
+#include <poincare/src/memory/tree.h>
+#include <stdint.h>
+
+#include "aliases.h"
+#include "dimension_vector.h"
+
+namespace Poincare::Internal {
+
+class PhysicalConstant {
+ public:
+  /* PhysicalConstant properties */
+  struct Properties {
+    Aliases m_aliasesList;
+    double m_value;
+    Units::SIVector m_dimension;
+  };
+
+  static int Index(LayoutSpan name);
+
+  static bool IsPhysicalConstant(LayoutSpan name) { return Index(name) >= 0; }
+
+  static const Properties& GetProperties(const Tree* constant);
+
+#if POINCARE_PHYSICAL_CONSTANT
+  constexpr static int k_numberOfConstants = 14;
+#else
+  constexpr static int k_numberOfConstants = 0;
+#endif
+
+ private:
+  static const Properties k_constants[k_numberOfConstants];
+};
+
+}  // namespace Poincare::Internal

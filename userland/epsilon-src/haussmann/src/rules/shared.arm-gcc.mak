@@ -1,0 +1,45 @@
+$(OUTPUT_DIRECTORY)/%.bin: $(OUTPUT_DIRECTORY)/%.elf
+	$(call rule_label,OBJCOPY)
+	$(OBJCOPY) -O binary $< $@
+
+$(call document_extension,bin,Extract plain binary from ELF file)
+
+$(OUTPUT_DIRECTORY)/%.hex: $(OUTPUT_DIRECTORY)/%.elf
+	$(call rule_label,OBJCOPY)
+	$(OBJCOPY) -O ihex $< $@
+
+$(call document_extension,hex,Extract Intel .hex from ELF file)
+
+DFU_ALTSETTING_OFFSET := 0
+$(OUTPUT_DIRECTORY)/%.dfu: $(OUTPUT_DIRECTORY)/%.elf
+	$(call rule_label,ELF2DFU)
+	$(PYTHON) tools/device/elf2dfu.py -i $< -o $@ -u $(USBVIDPID) -a $(DFU_ALTSETTING_OFFSET)
+
+$(call document_extension,dfu)
+
+$(OUTPUT_DIRECTORY)/%.flash: $(OUTPUT_DIRECTORY)/%.dfu
+	$(call rule_label,FLASH)
+	$(DFU) -D $< $(if $(DFULEAVE),-s $(DFULEAVE):leave)
+
+$(call document_extension,flash,Write <...>.dfu to a device. Define DFULEAVE to jump at an address after the write.)
+
+$(OUTPUT_DIRECTORY)/%.st_flash: $(OUTPUT_DIRECTORY)/%.elf
+	$(call rule_label,STFLASH)
+	STM32_Programmer_CLI -c port=SWD mode=UR -d $< -rst
+
+$(call document_extension,st_flash,Write <...>.bin to a device using a ST-Link and STM32_Programmer_CLI.)
+
+$(OUTPUT_DIRECTORY)/%.elf.size_tree: JSON ?=
+$(OUTPUT_DIRECTORY)/%.elf.size_tree: $(OUTPUT_DIRECTORY)/%.elf
+	$(PYTHON) tools/device/elf_size_tree.py $< $(if $(JSON),--json,--rich)
+
+$(call document_extension,elf.size_tree,Generate a size tree from the ELF file. Pass JSON=1 to generate a JSON file instead of a rich text output.)
+
+$(OUTPUT_DIRECTORY)/%.qemu: $(OUTPUT_DIRECTORY)/%.semihosting.bin
+	$(call rule_label,QEMU)
+	$(call assert_defined,QEMU_ARM)
+	$(call assert_defined,QEMU_ARM_FLAGS)
+	$(if $(shell command -v $(QEMU_ARM) 2> /dev/null),,$(error "QEMU_ARM ($(QEMU_ARM)) not found in PATH"))
+	$(QEMU_ARM) $(QEMU_ARM_FLAGS) -kernel $<
+
+$(call document_extension,qemu,Run the <...>.semihosting.bin file in QEMU.)

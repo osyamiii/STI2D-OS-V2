@@ -1,0 +1,154 @@
+#pragma once
+
+#include <apps/i18n.h>
+#include <assert.h>
+#include <escher/theme/components.h>
+#include <poincare/print.h>
+#include <string.h>
+
+#include <array>
+
+namespace Statistics::Categorical {
+
+struct TableDimension {
+  int col;
+  int row;
+};
+
+/* Store for the categorical statistics app, contains:
+ * - the snapshot data [TableData]
+ * - memoized data (like sum for each group) */
+class Store {
+ private:
+  enum class GroupStatus : uint8_t {
+    Empty,   // Inactive because no value
+    Active,  // Active, the group has at least one value
+    Hidden,  // Inactive because User chose to (the group can be empty or not)
+  };
+
+ public:
+  constexpr static int k_labelGlyphLength = 11;  // 11 (from spec)
+  // +4 to allow 2 or 3 combining CodePoint
+  constexpr static int k_labelLength = k_labelGlyphLength + 4;
+  constexpr static int k_maxNumberOfGroups = 6;
+  constexpr static int k_maxNumberOfCategory = 10;
+  using Label = char[k_labelLength + 1];  // + \x00
+
+  /* Subpart of the [Store] that will be stored in the snapshot */
+  struct TableData {
+    friend class Store;
+    TableData();
+
+   private:
+    std::array<Label, k_maxNumberOfGroups> m_groupLabels = {};
+    std::array<GroupStatus, k_maxNumberOfGroups> m_groupStatus = {};
+    std::array<bool, k_maxNumberOfGroups> m_showRelativeFreqColumn = {};
+    std::array<uint8_t, k_maxNumberOfGroups> m_colorIndex = {};
+    std::array<Label, k_maxNumberOfCategory> m_categoryLabels = {};
+    float m_data[k_maxNumberOfGroups][k_maxNumberOfCategory];
+    uint8_t m_selectedGroupForPieGraph;
+  };
+
+  Store(TableData* tableData) : m_table(tableData) {
+    recomputeDimensions();
+    recomputeAllSums();
+  }
+
+  /* Returns the max dimension of the current data in each axis */
+  TableDimension currentDimension() const {
+    return TableDimension{m_numberOfColumns, m_numberOfRows};
+  }
+
+  // Group status
+  void setGroupActive(bool active, int col);
+  bool isGroupActive(int col) const {
+    // Group is inactive if the sum of its values is null
+    return m_table->m_groupStatus[col] == GroupStatus::Active &&
+           m_sumOfCategories[col] > 0;
+  }
+  bool isGroupEmpty(int col) const;
+  bool hasActiveGroups() const;
+  int numberOfActiveGroups() const;
+  int indexInActiveGroups(int group) const;
+
+  bool isCategoryActive(int row) const;
+  int numberOfActiveCategories() const;
+  int indexInActiveCategories(int category) const;
+
+  // Data
+  float getValue(int col, int row) const {
+    assert(0 <= col && col < k_maxNumberOfGroups);
+    assert(0 <= row && row < k_maxNumberOfCategory);
+    return m_table->m_data[col][row];
+  }
+  void setValue(float data, int col, int row);
+  bool authorizedValue(float data) { return data >= 0; }
+  float getMaxActiveTableValue() const;
+
+  // Labels
+  void getGroupName(int col, char* buffer, int bufferSize) const;
+  void setGroupName(const char* name, int col) {
+    assert(0 <= col && col < k_maxNumberOfGroups);
+    strlcpy(m_table->m_groupLabels[col], name, sizeof(Label));
+  }
+  void getCategoryName(int row, char* buffer, int bufferSize) const;
+  void setCategoryName(const char* name, int row) {
+    assert(0 <= row && row < k_maxNumberOfCategory);
+    strlcpy(m_table->m_categoryLabels[row], name, sizeof(Label));
+  }
+
+  // Erase & Clear
+  void eraseValue(int col, int row);
+  void clearColumn(int col);
+  void clearRow(int row);
+
+  // RF related
+  bool isRelativeFrequencyColumnActive(int col) const {
+    assert(0 <= col && col < k_maxNumberOfGroups);
+    return m_table->m_showRelativeFreqColumn[col];
+  }
+  void setRelativeFrequencyColumn(int col, bool active) {
+    assert(0 <= col && col < k_maxNumberOfGroups);
+    m_table->m_showRelativeFreqColumn[col] = active;
+  }
+  // Relative frequency of a value with respect to its group
+  float getRelativeFrequency(int col, int row) const;
+  // Relative frequency of a value with respect to all active data
+  float getJointRelativeFrequency(int col, int row) const;
+
+  // Color
+  Escher::ThemeComponent colorOfGroupAtIndex(int group) const;
+  Escher::ThemeComponent colorLightOfGroupAtIndex(int group) const;
+  uint8_t colorIndexForGroup(int col) const {
+    assert(0 <= col && col < k_maxNumberOfGroups);
+    return m_table->m_colorIndex[col];
+  }
+  void setColorIndexForGroup(int col, uint8_t colorIndex) {
+    assert(0 <= col && col < k_maxNumberOfGroups);
+    m_table->m_colorIndex[col] = colorIndex;
+  }
+
+  // Selected group in pie graph
+  int getSelectedGroupForPieGraph() {
+    return m_table->m_selectedGroupForPieGraph;
+  }
+  void setSelectedGroupForPieGraph(int group) {
+    assert(0 <= group && group < k_maxNumberOfGroups);
+    assert(isGroupActive(group));
+    m_table->m_selectedGroupForPieGraph = group;
+  }
+
+ private:
+  void recomputeDimensions();
+  void recomputeSum(int column);
+  void recomputeAllSums();
+  bool nonMemoizedIsGroupEmpty(int column) const;
+  float totalSum() const;
+
+  std::array<float, k_maxNumberOfGroups> m_sumOfCategories;
+  int m_numberOfRows;
+  int m_numberOfColumns;
+  TableData* m_table;
+};
+
+}  // namespace Statistics::Categorical

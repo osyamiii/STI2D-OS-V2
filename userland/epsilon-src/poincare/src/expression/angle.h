@@ -1,0 +1,65 @@
+#pragma once
+
+#include <omg/unreachable.h>
+#include <poincare/angle_unit.h>
+#include <poincare/src/memory/tree.h>
+
+#include "k_tree.h"
+
+namespace Poincare::Internal {
+
+class Angle {
+ public:
+  static const Tree* ToRad(AngleUnit angleUnit) {
+    switch (angleUnit) {
+      case AngleUnit::None:
+        OMG_UNREACHABLE;
+        [[fallthrough]];
+      case AngleUnit::Radian:
+        return 1_e;
+      case AngleUnit::Degree:
+        return KMult(1_e / 180_e, π_e);
+#if !POINCARE_UNIT_ONLY_ANGLES
+      case AngleUnit::Gradian:
+        return KMult(1_e / 200_e, π_e);
+#endif
+    }
+    OMG_UNREACHABLE;
+  }
+
+  static const Tree* RadTo(AngleUnit angleUnit) {
+    switch (angleUnit) {
+      case AngleUnit::None:
+        OMG_UNREACHABLE;
+        [[fallthrough]];
+      case AngleUnit::Radian:
+        return 1_e;
+      case AngleUnit::Degree:
+        return KMult(180_e, KPow(π_e, -1_e));
+#if !POINCARE_UNIT_ONLY_ANGLES
+      case AngleUnit::Gradian:
+        return KMult(200_e, KPow(π_e, -1_e));
+#endif
+    }
+    OMG_UNREACHABLE;
+  }
+
+  static const Tree* Period(AngleUnit angleUnit) {
+    switch (angleUnit) {
+      case AngleUnit::Degree:
+        return 360_e;
+      case AngleUnit::None:
+        OMG_UNREACHABLE;
+        [[fallthrough]];
+      case AngleUnit::Radian:
+        return KMult(2_e, π_e);
+#if !POINCARE_UNIT_ONLY_ANGLES
+      case AngleUnit::Gradian:
+        return 400_e;
+#endif
+    }
+    OMG_UNREACHABLE;
+  }
+};
+
+}  // namespace Poincare::Internal

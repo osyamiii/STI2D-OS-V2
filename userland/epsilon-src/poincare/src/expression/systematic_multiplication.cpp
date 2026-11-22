@@ -1,0 +1,318 @@
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/pattern_matching.h>
+
+#include "dependency.h"
+#include "infinity.h"
+#include "integer.h"
+#include "k_tree.h"
+#include "matrix.h"
+#include "number.h"
+#include "power_like.h"
+#include "systematic_operation.h"
+#include "undefined.h"
+
+namespace Poincare::Internal {
+
+static Tree* PowerMerge(int* numberOfDependencies, const Tree* child,
+                        const Tree* next, const Tree* base,
+                        const Tree* expChild, const Tree* expNext) {
+  Tree* merge = PatternMatching::CreateReduce(
+      KPow(KA, KAdd(KB, KC)), {.KA = base, .KB = expChild, .KC = expNext});
+  if (merge->isDep()) {
+    merge->removeNode();
+    *numberOfDependencies += merge->nextTree()->numberOfChildren();
+    merge->nextTree()->removeNode();
+  }
+  /* Dependencies need to be added when one of the expressions to be merged was
+   * under a negative exponent. */
+  // dep(t^(m+n), {t^m}) if m <= 0
+  if (!GetComplexProperties(expChild).realSign().isStrictlyPositive()) {
+    child->cloneTree();
+    (*numberOfDependencies)++;
+  }
+  // dep(t^(m+n), {t^n}) if n <= 0
+  if (!GetComplexProperties(expNext).realSign().isStrictlyPositive()) {
+    next->cloneTree();
+    (*numberOfDependencies)++;
+  }
+  return merge;
+}
+
+static bool IsFinite(const Tree* e) {
+  if (!Approximation::CanApproximate(e)) {
+    return !Undefined::CanBeUndefined(e) &&
+           !GetComplexProperties(e).canBeInfinite();
+  }
+  std::complex<double> approx = Approximation::To<std::complex<double>>(
+      e, Approximation::Parameters{.policy = {.optimize = true}});
+  return std::isfinite(approx.real()) && std::isfinite(approx.imag());
+}
+
+// Factorize two big powers by the smallest exponent
+static Tree* BigPowerMerge(PowerLike::BaseAndExponent A,
+                           PowerLike::BaseAndExponent B) {
+  // A^D*B^E => F^C*A^(D±C)*B^(E±C) with F either A*B, A/B, B/A or 1/(A*B)
+  assert(A.exponent->isInteger() && B.exponent->isInteger());
+  assert(!A.exponent->isZero() && !B.exponent->isZero());
+  // Find smallest exponent in absolute value
+  const Tree* commonExponent =
+      IntegerHandler::CompareAbs(Integer::Handler(A.exponent),
+                                 Integer::Handler(B.exponent)) < 0
+          ? A.exponent
+          : B.exponent;
+  // Factor A and B accordingly
+  // Use (A*B), (A/B), (B/A) or (1/(A*B)) under common exponent
+  Tree* result = PatternMatching::CreateReduce(
+      KMult(KPow(KMult(KPow(KA, KF), KPow(KB, KG)), KAbs(KC)),
+            KPow(KA, KAdd(KD, KMult(-1_e, KF, KAbs(KC)))),
+            KPow(KB, KAdd(KE, KMult(-1_e, KG, KAbs(KC))))),
+      {.KA = A.base,
+       .KB = B.base,
+       .KC = commonExponent,
+       .KD = A.exponent,
+       .KE = B.exponent,
+       .KF = (A.exponent->isNegativeInteger() ? -1_e : 1_e),
+       .KG = (B.exponent->isNegativeInteger() ? -1_e : 1_e)});
+
+  // At least one term should have been simplified out
+  assert(!result->isMult() || result->numberOfChildren() <= 2);
+  return result;
+}
+
+static bool MergeMultiplicationChildWithNext(Tree* child,
+                                             int* numberOfDependencies,
+                                             int* nbOfRemovedChildren) {
+  assert(nbOfRemovedChildren);
+  *nbOfRemovedChildren = 0;
+  Tree* next = child->nextTree();
+  Tree* merge = nullptr;
+  if (child->isZero()) {
+    if (next->isInf()) {
+      // 0 * inf -> undef
+      merge = KUndefUnhandled->cloneTree();
+    } else {
+      if (Dimension::IsNonListScalar(next)) {
+        if (IsFinite(next)) {
+          // 0 * x -> 0
+          next->removeTree();
+        } else {
+          // 0 * x -> dep(0, {0 * x})
+          SharedTreeStack->pushMult(2);
+          child->cloneTree();
+          next->detachTree();
+          (*numberOfDependencies)++;
+        }
+        *nbOfRemovedChildren = 1;
+        return true;
+      }
+    }
+  }
+  if (child->isOne() || (child->isInf() && next->isInf())) {
+    // 1 * x -> x
+    // inf * inf -> inf
+    child->removeTree();
+    *nbOfRemovedChildren = 1;
+    return true;
+  } else if (next->isOne()) {
+    // x * 1 -> x
+    next->removeTree();
+    *nbOfRemovedChildren = 1;
+    return true;
+  } else if (child->isRationalOrFloat() && next->isRationalOrFloat()) {
+    // Merge numbers
+    merge = Number::Multiplication(child, next);
+  } else if (next->isMatrix()) {
+    // TODO: Maybe this should go in advanced reduction.
+    /* TODO: This isMatrix is not enough as the child tree could be of dimension
+     * matrix without being a matrix. Like Pow([[x]],20000000000) */
+    merge = (child->isMatrix()
+                 ? Matrix::Multiplication
+                 : Matrix::ScalarMultiplication)(child, next, nullptr);
+  } else {
+    PowerLike::BaseAndExponent childParameters =
+        PowerLike::GetBaseAndExponent(child, true);
+    PowerLike::BaseAndExponent nextParameters =
+        PowerLike::GetBaseAndExponent(next, true);
+    assert(childParameters.isValid() && nextParameters.isValid());
+    if (!(childParameters.base->isInteger() &&
+          (child->isExp() != next->isExp())) &&
+        childParameters.base->treeIsIdenticalTo(nextParameters.base)) {
+      // t^m * t^n -> t^(m+n)
+      /* PowReal trees cannot be merged without care because it could change the
+       * result. For example PowReal(-1, x) * PowReal(-1, x) is always equal to
+       * 1, but PowReal(-1, 2x) is equal to -1 or 1 depending on the value of x.
+       * See the SystematicOperation::ReducePowerReal function for more details.
+       */
+      /* The merge operation is also not applied if the base is an integer and
+       * {child, next} is a pair of power-like trees in which one is an
+       * Exp(a*Ln()) expression and the other is a Pow. It would create an
+       * infinite loop. The merged tree would be splitted back into a
+       * Mult(Pow(t, n), Exp(m, Ln(t))) by the systematic reduction step that
+       * expands powers with a rational exponent outside of the [0, 1] range. */
+      merge =
+          PowerMerge(numberOfDependencies, child, next, childParameters.base,
+                     childParameters.exponent, nextParameters.exponent);
+    } else if (child->isPow() && next->isPow() &&
+               childParameters.base->isRational() &&
+               nextParameters.base->isRational()) {
+      /* Some rational powers may not reduce because of too big values.
+       * The exponents can be factored to reduce into a single big power.
+       * Some examples:
+       * 100^21 * 333^25 -> (33 300)^21 * 333^4
+       * 100^-21 * 333^25 -> (333/100)^21 * 333^4
+       * This reduces the number of big powers, and can make approximations or
+       * even reduction possible */
+      merge = BigPowerMerge(childParameters, nextParameters);
+    }
+  }
+
+  if (!merge) {
+    return false;
+  }
+  // Replace both child and next with merge
+  next->moveTreeOverTree(merge);
+  child->removeTree();
+  if (child->isMult()) {
+    /* nbOfRemovedChildren can be negative here, if 2 merged tree become a mult
+     * with 3 child e.g.: √(2eπ)*√(2eπ) = 2eπ */
+    *nbOfRemovedChildren = 2 - child->numberOfChildren();
+    // Move children into parent multiplication
+    child->removeNode();
+  } else {
+    *nbOfRemovedChildren = 1;
+  }
+  return true;
+}
+
+static bool MergeMultiplicationChildrenFrom(Tree* child, int index,
+                                            int* numberOfSiblings,
+                                            int* numberOfDependencies) {
+  assert(*numberOfSiblings > 0);
+  bool changed = false;
+  int nbOfRemovedChildren = 0;
+  while (index < *numberOfSiblings) {
+    if (!(index + 1 < *numberOfSiblings &&
+          MergeMultiplicationChildWithNext(child, numberOfDependencies,
+                                           &nbOfRemovedChildren))) {
+      // Child is neither 0, 1 and can't be merged with next child (or is last).
+      return changed;
+    }
+    (*numberOfSiblings) -= nbOfRemovedChildren;
+    assert(*numberOfSiblings > 0);
+    changed = true;
+  }
+  return changed;
+}
+
+static bool ReduceMultiplicationChildRec(Tree* child, int index,
+                                         int* numberOfSiblings,
+                                         bool* multiplicationChanged,
+                                         int* numberOfDependencies) {
+  assert(*numberOfSiblings > 0);
+  assert(index < *numberOfSiblings);
+  // Merge child with right siblings as much as possible.
+  bool childChanged = MergeMultiplicationChildrenFrom(
+      child, index, numberOfSiblings, numberOfDependencies);
+  // Reduce starting from next child.
+  if (index + 1 < *numberOfSiblings &&
+      ReduceMultiplicationChildRec(child->nextTree(), index + 1,
+                                   numberOfSiblings, multiplicationChanged,
+                                   numberOfDependencies)) {
+    // Next child changed, child may now merge with it.
+    childChanged = MergeMultiplicationChildrenFrom(
+                       child, index, numberOfSiblings, numberOfDependencies) ||
+                   childChanged;
+  }
+  *multiplicationChanged = *multiplicationChanged || childChanged;
+  return childChanged;
+}
+
+static bool ReduceMultiplicationWithInf(Tree* e) {
+  // x*inf -> sign(x)*inf
+  // Except when x = -i,-1,0,1,i or sign (to avoid infinite loop)
+  // TODO: check for |x| = 0 or 1 when `sign(z)=exp(i*arg(z))` is implemented.
+  PatternMatching::Context ctx;
+  if (Dimension::Get(e).isScalar() &&
+      PatternMatching::Match(e, KMult(KA_s, KInf, KB_s), &ctx)) {
+    TreeRef x = PatternMatching::CreateReduce(KMult(KA_s, KB_s), ctx);
+    assert(!x->isZero());
+    PatternMatching::Context ctx;
+    // TODO: there has to be a better way to test if x is a fixed point of Sign
+    if (x->isOne() || x->isMinusOne() || x->isSign() || x->isComplexI() ||
+        x->treeIsIdenticalTo(KMult(-1_e, i_e)) ||
+        PatternMatching::Match(x, KMult(KSign(KA), i_e), &ctx)) {
+      x->removeTree();
+      return false;
+    }
+    e->moveTreeOverTree(
+        PatternMatching::CreateReduce(KMult(KSign(KA), KInf), {.KA = x}));
+    x->removeTree();
+    return true;
+  }
+  return false;
+}
+
+bool SystematicOperation::ReduceSortedMultiplication(Tree* e) {
+  assert(e->isMult());
+  int n = e->numberOfChildren();
+  bool changed = false;
+  assert(n > 1);
+  /* Recursively merge children.
+   * Keep track of n and changed status. */
+  int numberOfDependencies = 0;
+  TreeRef depList = SharedTreeStack->pushDepList(numberOfDependencies);
+  ReduceMultiplicationChildRec(e->child(0), 0, &n, &changed,
+                               &numberOfDependencies);
+  assert(n > 0);
+  NAry::SetNumberOfChildren(e, n);
+
+  Tree* mult = e;
+  if (numberOfDependencies > 0) {
+    NAry::SetNumberOfChildren(depList, numberOfDependencies);
+    // TODO: create moveTreeAfterNode
+    e->nextTree()->moveTreeBeforeNode(depList);
+    e->cloneNodeAtNode(KDep);
+    mult = Dependency::Main(e);
+  } else {
+    depList->removeTree();
+  }
+  assert(mult->isMult());
+
+  if (changed && NAry::SquashIfPossible(mult)) {
+    return true;
+  }
+
+  if (ReduceMultiplicationWithInf(mult)) {
+    if (mult->isDep()) {
+      // e can also be a dep, we need to bubble up
+      Dependency::ShallowBubbleUpDependencies(e);
+    }
+#if ASSERTIONS
+    if (Dependency::SafeMain(e)->isMult()) {
+      Tree* mult = Dependency::SafeMain(e);
+      assert(!NAry::Sort(mult, Order::OrderType::PreserveMatrices));
+      COSTLY_ASSERT(!ReduceSortedMultiplication(mult));
+    }
+#endif
+    return true;
+  }
+  assert(mult->isMult());
+
+  if (!changed) {
+    return false;
+  }
+
+  /* Merging children can un-sort the multiplication. It must then be simplified
+   * again once sorted again. For example:
+   * 3*a*i*i -> Simplify -> 3*a*-1 -> Sort -> -1*3*a -> Simplify -> -3*a */
+  if (NAry::Sort(mult, Order::OrderType::PreserveMatrices)) {
+    ReduceSortedMultiplication(mult);
+    if (mult->isDep()) {
+      // e can also be a dep, we need to bubble up
+      Dependency::ShallowBubbleUpDependencies(e);
+    }
+  }
+  return true;
+}
+
+}  // namespace Poincare::Internal

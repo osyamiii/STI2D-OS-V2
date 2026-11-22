@@ -1,0 +1,98 @@
+#include "symbol.h"
+
+#include <poincare/properties.h>
+#include <poincare/src/memory/tree_stack.h>
+#include <string.h>
+
+#include <algorithm>
+
+namespace Poincare::Internal {
+
+char* Symbol::CopyName(const Tree* e, char* buffer, size_t bufferSize) {
+  assert(e->isUserSymbol());
+  size_t length = Length(e);
+  assert(GetName(e)[length] == 0);
+  return buffer + strlcpy(buffer, GetName(e), std::min(bufferSize, length + 1));
+}
+
+const char* Symbol::GetName(const Tree* e) {
+  assert(e->isUserSymbol());
+  // BlockType, Size, Name
+  return reinterpret_cast<const char*>(e->block()->nextNth(2));
+}
+
+bool Symbol::IsNamed(const Tree* e, const char* name) {
+  assert(e->isUserSymbol());
+  return strcmp(GetName(e), name) == 0;
+}
+
+bool Symbol::IsUserVariable(const Tree* e, const char* name) {
+  if (!e->isUserVariable()) {
+    return false;
+  }
+  return IsNamed(e, name);
+}
+
+ComplexProperties Symbol::GetComplexProperties(const Tree* e) {
+  /* Undefined global variables are considered scalar (and real finite for
+   * UserVariables) */
+  assert(e->isUserSymbol());
+  return e->isUserVariable() ? ComplexProperties::RealFinite()
+                             : ComplexProperties::Unknown();
+}
+
+bool involvesCircularity(const Tree* e,
+                         const Poincare::SymbolContext& symbolContext,
+                         int maxDepth, const char** visitedSymbols,
+                         int numberOfVisitedSymbols) {
+  const char* name = nullptr;
+
+  bool isSymbol = e->isUserFunction() || e->isUserVariable();
+
+  // Check for circularity only when a symbol/function is encountered
+  if (isSymbol) {
+    name = Symbol::GetName(e);
+    // Check if this symbol has already been visited.
+    for (int i = 0; i < numberOfVisitedSymbols; i++) {
+      if (strcmp(name, visitedSymbols[i]) == 0) {
+        return true;
+      }
+    }
+  }
+
+  // Check children of this (useful for function parameters)
+  for (const Tree* child : e->children()) {
+    if (involvesCircularity(child, symbolContext, maxDepth, visitedSymbols,
+                            numberOfVisitedSymbols)) {
+      return true;
+    }
+  }
+
+  if (!isSymbol) {
+    return false;
+  }
+
+  // Check for circularity in the expression of the symbol and decrease depth
+  maxDepth--;
+  if (maxDepth < 0) {
+    /* We went too deep into the check and consider the expression to be
+     * circular. */
+    return true;
+  }
+  visitedSymbols[numberOfVisitedSymbols] = name;
+  numberOfVisitedSymbols++;
+
+  const Tree* definition = symbolContext.expressionForSymbol(e);
+  return definition &&
+         involvesCircularity(definition, symbolContext, maxDepth,
+                             visitedSymbols, numberOfVisitedSymbols);
+}
+
+bool Symbol::InvolvesCircularity(const Tree* e,
+                                 const Poincare::SymbolContext& symbolContext) {
+  const char* visitedSymbols[k_maxSymbolReplacementsCount];
+  return involvesCircularity(e, symbolContext, k_maxSymbolReplacementsCount,
+                             visitedSymbols, 0);
+}
+
+}  // namespace Poincare::Internal

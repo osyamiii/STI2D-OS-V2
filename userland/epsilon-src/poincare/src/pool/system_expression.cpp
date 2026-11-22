@@ -1,0 +1,304 @@
+#include <poincare/analysis_expression.h>
+#include <poincare/function_properties/integral.h>
+#include <poincare/helpers/decimal.h>
+#include <poincare/prepared_function.h>
+#include <poincare/src/expression/advanced_reduction.h>
+#include <poincare/src/expression/approximation.h>
+#include <poincare/src/expression/degree.h>
+#include <poincare/src/expression/dependency.h>
+#include <poincare/src/expression/integer.h>
+#include <poincare/src/expression/polynomial.h>
+#include <poincare/src/expression/properties.h>
+#include <poincare/src/expression/rational.h>
+#include <poincare/src/expression/simplification.h>
+#include <poincare/src/expression/symbol.h>
+#include <poincare/src/layout/parser.h>
+#include <poincare/src/layout/rack_from_text.h>
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/system_expression.h>
+#include <poincare/user_expression.h>
+
+namespace Poincare {
+
+using namespace Internal;
+
+SystemExpression SystemExpression::CreateReduce(const Tree* structure,
+                                                ContextTrees ctx) {
+  Tree* tree = PatternMatching::CreateReduce(structure, ctx);
+  Dependency::DeepRemoveUselessDependencies(tree);
+  return SystemExpression::Builder(tree);
+}
+
+SystemExpression SystemExpression::CreateIntegralOfAbsOfDifference(
+    SystemExpression lowerBound, const SystemExpression& upperBound,
+    SystemExpression integrandA, const SystemExpression& integrandB) {
+  Tree* integrand = PatternMatching::CreateReduce(
+      KAbs(KAdd(KA, KMult(-1_e, KB))), {.KA = integrandA, .KB = integrandB});
+  // KUnknownSymbol is the variable used in the grapher app
+  return IntegralBetweenBounds(SystemExpression::Builder(integrand),
+                               Internal::Symbol::GetName(KUnknownSymbol),
+                               lowerBound, upperBound);
+}
+
+// Builders from value.
+SystemExpression SystemExpression::Builder(int32_t n) {
+  return Builder(Integer::Push(n));
+}
+
+template <typename T>
+SystemExpression SystemExpression::Builder(T x) {
+  return Builder(SharedTreeStack->pushFloat(x));
+}
+
+template <typename T>
+SystemExpression SystemExpression::Builder(Coordinate2D<T> point) {
+  return SystemExpression::CreateReduce(
+      KPoint(KA, KB),
+      {.KA = Builder<T>(point.x()), .KB = Builder<T>(point.y())});
+}
+
+template <typename T>
+SystemExpression SystemExpression::Builder(
+    PointOrRealScalar<T> pointOrRealScalar) {
+  if (pointOrRealScalar.isRealScalar()) {
+    return Builder<T>(pointOrRealScalar.toRealScalar());
+  }
+  return Builder<T>(pointOrRealScalar.toPoint());
+}
+
+SystemExpression SystemExpression::DecimalBuilderFromDouble(double value) {
+  return SystemExpression::Builder(Poincare::DecimalBuilderFromDouble(value));
+}
+
+SystemExpression SystemExpression::RationalBuilder(int32_t numerator,
+                                                   int32_t denominator) {
+  return Builder(
+      Rational::Push(IntegerHandler(numerator), IntegerHandler(denominator)));
+}
+
+SystemExpression SystemExpression::Undefined() {
+  return SystemExpression::Builder(KUndef);
+}
+
+SystemExpression SystemExpression::cloneChildAtIndex(int i) const {
+  assert(tree());
+  return Builder(tree()->child(i));
+}
+
+SystemExpression SystemExpression::approximateSystemToTree(
+    FloatPrecision floatPrecision) const {
+  return SystemExpression::Builder(Approximation::To<Tree*>(
+      tree(), floatPrecision,
+      Approximation::Parameters{
+          .policy = {.optimize = true},
+          .expressionParameters =
+              Approximation::SystemExpressionPolicy{.prepare = true}}));
+}
+
+void SystemExpression::cloneAndBeautifyAndApproximate(
+    UserExpression* beautifiedExpression,
+    UserExpression* approximatedExpression,
+    const BeautificationParameters& beautificationParameters,
+    const ApproximationPolicy& approximationPolicy) const {
+  assert(beautifiedExpression && beautifiedExpression->isUninitialized());
+  *beautifiedExpression = cloneAndBeautify(beautificationParameters);
+  assert(approximatedExpression && approximatedExpression->isUninitialized());
+  *approximatedExpression = beautifiedExpression->cloneAndApproximate(
+      beautificationParameters.user, approximationPolicy);
+}
+
+UserExpression SystemExpression::cloneAndBeautify(
+    const BeautificationParameters& beautificationParameters) const {
+  Tree* e = tree()->cloneTree();
+  Simplification::BeautifyReduced(e, beautificationParameters,
+                                  Internal::Dimension::Get(e));
+  return UserExpression::Builder(e);
+}
+
+/* If reductionFailure is true, skip simplification. TODO: Like similar methods,
+ * returned expression is not actually SystemExpression if reduction failed. */
+SystemExpression ReplaceSymbolAndReduce(
+    const SystemExpression& e, const char* symbolName,
+    const SystemExpression& replaceSymbolWith, bool* reductionFailure,
+    SymbolicComputation symbolic, bool reduce) {
+  ExceptionTry {
+    Tree* symbol = SharedTreeStack->pushUserVariable(symbolName);
+    assert(Internal::Dimension::Get(replaceSymbolWith) ==
+           Internal::Dimension::Get(symbol));
+    TreeRef result = e.tree()->cloneTree();
+    Variables::ReplaceSymbolWithTree(result, symbol, replaceSymbolWith);
+    symbol->removeTree();
+    if (Variables::HasUserVariables(result, true)) {
+      // TODO: Only this case is used and handled for now.
+      assert(symbolic == SymbolicComputation::ReplaceAllSymbolsWithUndefined);
+      result->cloneTreeOverTree(KUndef);
+    }
+    if (reduce) {
+      /* Note: Advanced reduction could be allowed for slower but better
+       * reduction. */
+      Simplification::ReduceSystem(result, ReductionPolicy{.advanced = false});
+    }
+    return SystemExpression::Builder(static_cast<Tree*>(result));
+  }
+  ExceptionCatch(exc) {
+    switch (exc) {
+      case ExceptionType::TreeStackOverflow:
+      case ExceptionType::IntegerOverflow:
+        if (reduce) {
+          *reductionFailure = true;
+          // Try again without simplification
+          return ReplaceSymbolAndReduce(e, symbolName, replaceSymbolWith,
+                                        reductionFailure, symbolic, false);
+        }
+        [[fallthrough]];
+      default:
+        TreeStackCheckpoint::Raise(exc);
+    }
+  }
+  OMG_UNREACHABLE;
+}
+
+/* TODO: Like similar methods, returned expression is not actually
+ * SystemExpression if reduction failed. */
+SystemExpression SystemExpression::cloneAndReplaceSymbolWithExpression(
+    const char* symbolName, const SystemExpression& replaceSymbolWith,
+    bool* reductionFailure, SymbolicComputation symbolic) const {
+  assert(reductionFailure);
+  *reductionFailure = false;
+  return ReplaceSymbolAndReduce(*this, symbolName, replaceSymbolWith,
+                                reductionFailure, symbolic, true);
+}
+
+SystemExpression SystemExpression::getReducedDerivative(
+    const char* symbolName, int derivationOrder) const {
+  Tree* result = SharedTreeStack->pushDiff();
+  // Symbol (so that local variable is layouted to symbolName)
+  const Tree* symbol = SharedTreeStack->pushUserVariable(symbolName);
+  // Symbol value (so that the derivative is evaluated at symbolName's value)
+  SharedTreeStack->pushUserVariable(symbolName);
+  Integer::Push(derivationOrder);
+  Tree* derivand = tree()->cloneTree();
+  Variables::ReplaceUserVariable(derivand, symbol, 0,
+                                 Parametric::VariableProperties(result));
+  // Check dimension again as the diff may have changed it.
+  if (!Internal::Dimension::DeepCheck(result)) {
+    result->cloneTreeOverTree(KUndefUnhandledDimension);
+  } else {
+    Simplification::ReduceSystem(
+        result,
+        ReductionPolicy{.target = ReductionTarget::System, .advanced = false});
+  }
+  return SystemExpression::Builder(result);
+}
+
+PreparedFunction SystemExpression::getPreparedFunction(const char* symbolName,
+                                                       bool scalarsOnly) const {
+  Internal::Dimension dimension = Internal::Dimension::Get(tree());
+  if ((scalarsOnly &&
+       (!dimension.isScalar() || Internal::Dimension::IsList(tree()))) ||
+      (!dimension.isScalar() && !dimension.isPoint())) {
+    return PreparedFunction::Builder(KBadType);
+  }
+  Tree* result = tree()->cloneTree();
+  Approximation::PrepareFunctionForApproximation(result, symbolName, true);
+  return PreparedFunction::Builder(result);
+}
+
+template <typename T>
+T SystemExpression::approximateSystemToRealScalar() const {
+  if (!Internal::Dimension::IsNonListScalar(tree())) {
+    return NAN;
+  }
+  return Approximation::To<T>(
+      tree(), Approximation::Parameters{
+                  .policy = {.optimize = true},
+                  .expressionParameters =
+                      Approximation::SystemExpressionPolicy{.prepare = true}});
+}
+
+template <typename T>
+Coordinate2D<T> SystemExpression::approximateToPoint() const {
+  return Approximation::To<Coordinate2D<T>>(
+      tree(), Approximation::Parameters{
+                  .policy = {.optimize = true},
+                  .expressionParameters =
+                      Approximation::SystemExpressionPolicy{.prepare = true}});
+}
+
+AnalysisExpression SystemExpression::cloneAndExpand() const {
+  Tree* clone = tree()->cloneTree();
+  Internal::AdvancedReduction::DeepExpandAlgebraic(clone);
+  return AnalysisExpression::Builder(clone);
+}
+
+SystemExpression SystemExpression::approximateListAndSort(
+    FloatPrecision floatPrecision) const {
+  assert(dimension().isList());
+  Tree* clone = SharedTreeStack->pushListSort();
+  tree()->cloneTree();
+  clone->moveTreeOverTree(Approximation::To<Tree*>(
+      clone, floatPrecision,
+      Approximation::Parameters{
+          .policy = {.optimize = true},
+          .expressionParameters =
+              Approximation::SystemExpressionPolicy{.prepare = true}}));
+  return SystemExpression::Builder(clone);
+}
+
+SystemExpression SystemExpression::removeUndefAndComplexListElements() const {
+  Tree* clone = tree()->cloneTree();
+  assert(clone->isList());
+  int n = clone->numberOfChildren();
+  int remainingChildren = n;
+  Tree* child = clone->nextNode();
+  for (int i = 0; i < n; i++) {
+    if (child->isUndefined() ||
+        (Internal::Dimension::Get(child).isScalar() &&
+         GetComplexProperties(child).isNonReal()) ||
+        (child->isPoint() && child->hasChildSatisfying([](const Tree* e) {
+          return e->isUndefined() || GetComplexProperties(e).isNonReal();
+        }))) {
+      child->removeTree();
+      remainingChildren--;
+      NAry::SetNumberOfChildren(clone, remainingChildren);
+    } else {
+      child = child->nextTree();
+    }
+  }
+  return SystemExpression::Builder(clone);
+}
+
+Sign SystemExpression::sign() const { return GetSign(tree()); }
+
+/* TODO: Find a better way to avoid duplication of Builder, clone, and
+ *       cloneChildAtIndex methods with other types of expressions. */
+SystemExpression SystemExpression::Builder(const Tree* tree) {
+  PoolHandle p = BuildPoolHandleFromTree(tree);
+  return static_cast<SystemExpression&>(p);
+}
+
+SystemExpression SystemExpression::Builder(Tree* tree) {
+  SystemExpression result = Builder(const_cast<const Tree*>(tree));
+  if (tree) {
+    tree->removeTree();
+  }
+  return result;
+}
+
+template SystemExpression SystemExpression::Builder<float>(float);
+template SystemExpression SystemExpression::Builder<double>(double);
+template SystemExpression SystemExpression::Builder<float>(Coordinate2D<float>);
+template SystemExpression SystemExpression::Builder<double>(
+    Coordinate2D<double>);
+template SystemExpression SystemExpression::Builder<float>(
+    PointOrRealScalar<float>);
+template SystemExpression SystemExpression::Builder<double>(
+    PointOrRealScalar<double>);
+template float SystemExpression::approximateSystemToRealScalar<float>() const;
+template double SystemExpression::approximateSystemToRealScalar<double>() const;
+template Coordinate2D<float> SystemExpression::approximateToPoint<float>()
+    const;
+template Coordinate2D<double> SystemExpression::approximateToPoint<double>()
+    const;
+
+}  // namespace Poincare

@@ -1,0 +1,69 @@
+SOURCES_apps += $(addprefix $(PATH_apps)/inference/,$(addsuffix :-test, \
+  app.cpp \
+  controllers/anova/input_data_controller.cpp \
+  controllers/anova/input_statistics_controller.cpp \
+  controllers/anova/results_tab_controller.cpp \
+  controllers/anova/tables/input_data_table.cpp \
+  controllers/anova/tables/input_statistics_table.cpp \
+  controllers/anova/tables/results_between_within_table.cpp \
+  controllers/anova/tables/results_statistics_table.cpp \
+  controllers/chi_square/categorical_type_controller.cpp \
+  controllers/chi_square/input_goodness_controller.cpp \
+  controllers/chi_square/input_homogeneity_controller.cpp \
+  controllers/chi_square/results_goodness_controller.cpp \
+  controllers/chi_square/results_homogeneity_controller.cpp \
+  controllers/chi_square/tables/homogeneity_data_source.cpp \
+  controllers/chi_square/tables/results_goodness_contributions_table.cpp \
+  controllers/chi_square/tables/results_homogeneity_table.cpp \
+  controllers/chi_square/tables/input_goodness_table.cpp \
+  controllers/chi_square/tables/input_homogeneity_table.cpp \
+  controllers/confidence_interval/interval_conclusion_view.cpp \
+  controllers/confidence_interval/interval_curve_view.cpp \
+  controllers/confidence_interval/interval_graph_controller.cpp \
+  controllers/confidence_interval/interval_graph_view.cpp \
+  controllers/store/input_store_controller.cpp \
+  controllers/store/store_table_cell.cpp \
+  controllers/tables/categorical_cell.cpp \
+  controllers/tables/categorical_controller.cpp \
+  controllers/tables/categorical_table_cell.cpp \
+  controllers/tables/dynamic_cells_data_source.cpp \
+  controllers/tables/header_titles.cpp \
+  controllers/tables/one_header_row_table_data_source.cpp \
+  controllers/tables/one_header_column_one_header_row_table_data_source.cpp \
+  controllers/tables/two_header_columns_one_header_row_table_data_source.cpp \
+  controllers/significance_test/hypothesis_controller.cpp \
+  controllers/significance_test/hypothesis_editable_controller.cpp \
+  controllers/significance_test/hypothesis_display_only_controller.cpp \
+  controllers/significance_test/legend_view.cpp \
+  controllers/significance_test/test_curve_view.cpp \
+  controllers/significance_test/test_graph_controller.cpp \
+  controllers/significance_test/test_graph_view.cpp \
+  controllers/significance_test/zoom_hint_view.cpp \
+  controllers/comparison_operator_popup_data_source.cpp \
+  controllers/dataset_controller.cpp \
+  controllers/input_controller.cpp \
+  controllers/results_controller.cpp \
+  controllers/test_controller.cpp \
+  controllers/type_controller.cpp \
+) \
+  models/anova_test.cpp \
+  models/chi2_test.cpp \
+  models/confidence_interval.cpp \
+  models/goodness_test.cpp \
+  models/homogeneity_test.cpp \
+  models/inference_model.cpp \
+  models/one_mean_statistic.cpp \
+  models/significance_test.cpp \
+  models/slope_t_statistic.cpp \
+  models/input_table.cpp \
+  models/input_table_from_store.cpp \
+  models/two_means_statistic.cpp \
+  test/inference_models.cpp:+test \
+)
+
+$(call depends_on_transparent_themed_image,apps,$(PATH_apps)/inference/app.cpp,$(PATH_apps)/icons/light/inference_light_icon.png,$(PATH_apps)/icons/dark/inference_dark_icon.png,:-test)
+
+$(call depends_on_transparent_selectable_themed_image,apps,$(PATH_apps)/inference/app.cpp,$(PATH_apps)/inference/images/confidence_interval_light_icon.png,$(PATH_apps)/inference/images/confidence_interval_dark_icon.png,$(PATH_apps)/inference/images/confidence_interval_selected_dark_icon.png,:-test)
+$(call depends_on_transparent_selectable_themed_image,apps,$(PATH_apps)/inference/app.cpp,$(PATH_apps)/inference/images/significance_test_light_icon.png,$(PATH_apps)/inference/images/significance_test_dark_icon.png,$(PATH_apps)/inference/images/significance_test_selected_dark_icon.png,:-test)
+
+$(call i18n_with_universal,inference/i18n/base)

@@ -1,0 +1,76 @@
+#pragma once
+
+#include <apps/i18n.h>
+#include <apps/shared/math_app.h>
+#include <poincare/context_with_parent.h>
+
+#include "equation_store.h"
+#include "interval_controller.h"
+#include "list_controller.h"
+#include "solutions_controller.h"
+#include "system_of_equations.h"
+
+namespace Solver {
+
+class App : public Shared::MathApp {
+ public:
+  // Descriptor
+  class Descriptor : public Escher::App::Descriptor {
+   public:
+    I18n::Message name() const override { return I18n::Message::SolverApp; };
+    I18n::Message upperName() const override {
+      return I18n::Message::SolverAppCapital;
+    };
+    Escher::ThemedImage icon() const override;
+  };
+
+  constexpr static bool k_useTenPower = true;
+
+  // Snapshot
+  class Snapshot : public Shared::SharedApp::Snapshot {
+   public:
+    App* unpack(Escher::Container* container) override {
+      return new (container->currentAppBuffer()) App(this);
+    };
+    const Descriptor* descriptor() const override;
+    void reset() override;
+  };
+
+  static App* app() { return static_cast<App*>(Escher::App::app()); }
+  Snapshot* snapshot() {
+    return static_cast<Snapshot*>(Escher::App::snapshot());
+  }
+  const Snapshot* snapshot() const {
+    return static_cast<const Snapshot*>(Escher::App::snapshot());
+  }
+
+  const Poincare::SymbolContext& localContext() const override {
+    return m_localContext;
+  }
+
+  EquationStore* equationStore() { return &m_equationStore; }
+  SystemOfEquations* system() { return &m_system; }
+
+  void openSolutionsController(bool approximateSolve);
+  void openIntervalController();
+
+  void storageDidChangeForRecord(Ion::Storage::Record record) override;
+  void prepareForIntrusiveStorageChange() override;
+
+ private:
+  App(Snapshot* snapshot);
+
+  // Make unit underscore mandatory, so that they are not mixed with unknowns
+  Poincare::StrictUnitContext m_localContext;
+  EquationStore m_equationStore;
+  // Controllers
+  SolutionsController m_solutionsController;
+  Escher::ButtonRowController m_solutionHeader;
+  IntervalController m_intervalController;
+  ListController m_listController;
+  Escher::ButtonRowController m_listFooter;
+  Escher::StackViewController::Default m_stackViewController;
+  SystemOfEquations m_system;
+};
+
+}  // namespace Solver

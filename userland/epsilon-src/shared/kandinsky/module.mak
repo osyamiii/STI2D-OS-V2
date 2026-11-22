@@ -1,0 +1,115 @@
+$(call assert_defined,KANDINSKY_font_variant)
+
+KANDINSKY_codepoints := $(PATH_kandinsky)/fonts/code_points.h
+
+ifeq ($(KANDINSKY_font_variant),epsilon)
+_sources_kandinsky_fonts := LargeFont.ttf SmallFont.ttf
+endif
+ifeq ($(KANDINSKY_font_variant),scandium)
+_sources_kandinsky_fonts := SmallFont.ttf
+endif
+
+_kandinsky_generated_fonts_dir := $(call generated_sources_for,$(PATH_kandinsky)/fonts)
+KANDINSKY_fonts_dependencies := $(patsubst %.ttf,$(_kandinsky_generated_fonts_dir)/%.h,$(_sources_kandinsky_fonts))
+
+_sources_kandinsky_minimal := $(addprefix src/, \
+  color.cpp \
+  font.cpp \
+  point.cpp \
+  rect.cpp \
+)
+
+_kandinsky_glyph_index := fonts/codepoint_to_glyph_index.cpp
+
+_sources_kandinsky_extended := $(addprefix src/, \
+  context_line.cpp \
+  context_pixel.cpp \
+  context_rect.cpp \
+  context_text.cpp \
+  context_circle.cpp \
+  framebuffer.cpp \
+)
+
+_sources_kandinsky_test := $(addprefix test/, \
+  color.cpp \
+  font.cpp \
+  rect.cpp \
+)
+
+$(call create_module,kandinsky,1, \
+  $(_sources_kandinsky_minimal) \
+  $(addsuffix :-minimal,$(_sources_kandinsky_extended)) \
+  $(addsuffix :+test,$(_sources_kandinsky_test)) \
+)
+
+SOURCES_kandinsky += \
+  $(patsubst %.ttf,$(_kandinsky_generated_fonts_dir)/$(KANDINSKY_font_variant)/%.cpp,$(_sources_kandinsky_fonts)) \
+  $(_kandinsky_generated_fonts_dir)/codepoint_to_glyph_index.cpp
+
+$(call all_objects_for,$(SOURCES_kandinsky)): $(KANDINSKY_fonts_dependencies)
+# FIXME Tests in OMG should not require kandinsky
+$(call assert_defined,PATH_omg)
+$(call all_objects_for,$(PATH_omg)/test/print.cpp): $(KANDINSKY_fonts_dependencies)
+
+# Rasterizer
+
+$(call import_module,kandinsky_rasterizer,$(PATH_kandinsky)/fonts)
+$(call create_module,kandinsky_rasterizer,1,rasterizer.c)
+
+_cflags_kandinsky_rasterizer := -std=c11 -MMD -MP $(shell pkg-config freetype2 --cflags)
+_ldflags_kandinsky_rasterizer := $(shell pkg-config freetype2 --libs)
+
+_has_libpng := $(shell pkg-config libpng --exists && echo 1)
+ifeq ($(_has_libpng),1)
+  _cflags_kandinsky_rasterizer += $(shell pkg-config libpng --cflags) -DGENERATE_PNG=1
+  _ldflags_kandinsky_rasterizer += $(shell pkg-config libpng --libs)
+endif
+
+_kandinsky_rasterizer := $(TOOLS_DIRECTORY)/rasterizer.bin
+
+$(call create_tool,rasterizer, \
+  omg.lz4only \
+  kandinsky_rasterizer \
+)
+
+$(_kandinsky_rasterizer): TOOLS_CFLAGS += $(_cflags_kandinsky_rasterizer)
+$(_kandinsky_rasterizer): TOOLS_LDFLAGS += $(_ldflags_kandinsky_rasterizer)
+
+# Raster ttf into cpp
+
+# raster_font, <name>, <size>, <packed width>, <packed height>
+define raster_font
+$(eval \
+$(_kandinsky_generated_fonts_dir)/$(KANDINSKY_font_variant)/$1.cpp: $(PATH_kandinsky)/fonts/$(KANDINSKY_font_variant)/$1.ttf $(_kandinsky_rasterizer) | $$$$(@D)/.
+	$$(call rule_label,RASTER)
+	$(_kandinsky_rasterizer) \
+		$$< \
+		$2 $2 $3 $4 \
+		$1 \
+		$(_kandinsky_generated_fonts_dir)/$1.h \
+		$$@ \
+		$(_kandinsky_generated_fonts_dir)/codepoint_to_glyph_index.cpp \
+		$$(if $(_has_libpng),$$(basename $$@).png,)
+
+$(addprefix $(_kandinsky_generated_fonts_dir)/,codepoint_to_glyph_index.cpp $1.h): $(_kandinsky_generated_fonts_dir)/$(KANDINSKY_font_variant)/$1.cpp
+)
+
+generated_headers: $(_kandinsky_generated_fonts_dir)/$1.h
+endef
+
+
+ifeq ($(KANDINSKY_font_variant),epsilon)
+SFLAGS_kandinsky += -DKANDINSKY_FONT_LARGE_FONT=1 -DKANDINSKY_FONT_COMPRESS=1
+TOOLS_CFLAGS += -DKANDINSKY_FONT_COMPRESS=1
+$(call raster_font,SmallFont,12,7,14)
+$(call raster_font,LargeFont,16,10,18)
+endif
+ifeq ($(KANDINSKY_font_variant),scandium)
+# Monochrome glyphs are so small that compression does not save a single byte
+SFLAGS_kandinsky += -DKANDINSKY_FONT_VARIABLE_WIDTH=1 -DKANDINSKY_FONT_MONOCHROME=1
+# This flag remove some unsuitable codepoints glyphs from the set to
+# be rasterized, should we reduce the set aggressively to save flash ?
+TOOLS_CFLAGS += -DKANDINSKY_CODEPOINTS_SCANDIUM=1 -DKANDINSKY_FONT_MONOCHROME=1
+$(call raster_font,SmallFont,12,8,13)
+endif
+

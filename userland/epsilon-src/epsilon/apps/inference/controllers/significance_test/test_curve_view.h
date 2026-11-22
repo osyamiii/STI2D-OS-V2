@@ -1,0 +1,50 @@
+#pragma once
+
+#include <apps/shared/plot_view_policies.h>
+
+#include "inference/models/significance_test.h"
+
+namespace Inference {
+
+class TestPlotPolicy : Shared::PlotPolicy::WithCurves {
+ public:
+  constexpr static int k_zLabelMaxGlyphLength = 4;  // "-|z|"
+
+ protected:
+  void drawPlot(const Shared::AbstractPlotView* plotView, KDContext* ctx,
+                KDRect rect) const;
+  void drawZLabelAndZGraduation(const Shared::AbstractPlotView* plotView,
+                                KDContext* ctx, KDRect rect, float x,
+                                Poincare::Comparison::Operator op) const;
+  void drawLabelAndGraduation(const Shared::AbstractPlotView* plotView,
+                              KDContext* ctx, KDRect rect, float x,
+                              const Poincare::Layout& layout) const;
+  void drawTestCurve(const Shared::AbstractPlotView* plotView, KDContext* ctx,
+                     KDRect rect, float z, Poincare::Comparison::Operator op,
+                     double factor = 1.0) const;
+
+  SignificanceTest* m_test;
+};
+
+class TestXAxis : public Shared::PlotPolicy::HorizontalLabeledAxis {
+ protected:
+  void drawLabel(size_t labelIndex, float t,
+                 const Shared::AbstractPlotView* plotView, KDContext* ctx,
+                 KDRect rect, OMG::Axis axis,
+                 Escher::ThemeComponent color) const override;
+};
+
+typedef Shared::PlotPolicy::Axes<Shared::PlotPolicy::NoGrid, TestXAxis,
+                                 Shared::PlotPolicy::NoAxis>
+    TestAxes;
+
+class TestCurveView : public Shared::PlotView<TestAxes, TestPlotPolicy,
+                                              Shared::PlotPolicy::NoBanner,
+                                              Shared::PlotPolicy::NoCursor> {
+ public:
+  TestCurveView(SignificanceTest* test);
+
+  SignificanceTest* test() const { return m_test; }
+};
+
+}  // namespace Inference

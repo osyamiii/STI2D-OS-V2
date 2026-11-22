@@ -1,0 +1,108 @@
+#pragma once
+
+#include <omg/expiring_pointer.h>
+#include <stddef.h>
+#include <stdint.h>
+
+namespace OMG {
+
+/* Data structure to store a stack of variable-sized elements in one big buffer.
+ * The elements are stored one after another while offsets to reach the end of
+ * each element are stored at the end of the buffer, in the opposite direction.
+ * By doing so, we can memoize every element entered while not limiting the
+ * number of element stored in the buffer.
+ *
+ * If the remaining space is too small for storing a new element, we delete the
+ * oldest one.
+ */
+
+/*  Memory layout :
+                                                 <- Available space
+                                                 for new elements ->
++------------------------------------------------------------------------------+
+|           |           |           |           |                  |  |  |  |  |
+| Element 0 | Element 1 | Element 2 | Element 3 |                  |o3|o2|o1|o0|
+|   Oldest  |           |           |           |                  |  |  |  |  |
++------------------------------------------------------------------------------+
+^           ^           ^           ^           ^                  ^
+m_buffer    p3          p2          p1          p0                 offsetArea()
+
+with p_i = m_buffer + o_i
+
+*/
+
+// Lock and Unlock are callbacks to disable interruptions during critical parts.
+
+template <auto Lock = []() {}, auto Unlock = []() {}>
+class Store {
+ public:
+  Store(char* buffer, size_t bufferSize);
+
+  int numberOfElements() const { return m_numberOfElements; }
+  void* elementAtIndex(int index) const;
+
+  size_t maximumSize() const { return m_bufferSize - sizeof(Offset); }
+  size_t remainingSize() const { return spaceForNewElements(endOfElements()); }
+
+  /* Caller should make sure enough free space is available. */
+  void updateElementAtIndex(int index, const void* element, int size);
+
+  /* Caller should make sure enough free space is available. */
+  void* pushElement(const void* element, int size);
+
+  /* Make space by clearing some older elements if needed.
+   * neededSize must be smaller than maximumSize */
+  void makeRoomForElement(size_t neededSize);
+
+  void deleteElementAtIndex(int index);
+  void deleteAll() { m_numberOfElements = 0; }
+  void makeElementLast(int index, char* workBuffer);
+
+ protected:
+  char* endOfElements() const {
+    return numberOfElements() == 0
+               ? m_buffer
+               : endOfElementAtIndex(numberOfElements() - 1);
+  }
+  char* endOfElementAtIndex(int index) const;
+
+  /* Account for the size of an additional pointer at the end of the buffer. */
+  size_t spaceForNewElements(const char* currentEndOfElements) const;
+
+  void deleteOldestElement() {
+    assert(numberOfElements() > 0);
+    deleteElementAtIndex(0);
+  }
+
+  // Track an element that has been already copied/constructed in the buffer
+  void registerElement(char* element, int size);
+
+ private:
+  using Offset = uint16_t;
+  char* offsetArea() const {
+    return m_buffer + m_bufferSize - m_numberOfElements * sizeof(Offset);
+  }
+  Offset& offset(int i) const {
+    return *(reinterpret_cast<Offset*>(m_buffer + m_bufferSize) - i - 1);
+  }
+
+  char* const m_buffer;
+  const size_t m_bufferSize;
+  int m_numberOfElements;
+};
+
+inline void _doNothing() {}
+using StoreNoLock = Store<_doNothing, _doNothing>;
+
+template <class T>
+class StoreT : public StoreNoLock {
+ public:
+  using StoreNoLock::Store;
+  const T* elementAtIndex(int index) const {
+    return static_cast<const T*>(this->StoreNoLock::elementAtIndex(index));
+  }
+};
+
+}  // namespace OMG
+
+#include <omg/src/store_impl.inc>

@@ -1,0 +1,44 @@
+name: Epsilon / external apps
+on:
+  pull_request:
+    paths:
+      - 'epsilon/external_apps/**'
+
+env:
+  MAKEFLAGS: -j2
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  c-cpp-apps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install toolchain
+        uses: numworks/setup-arm-toolchain@latest
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: device
+      - uses: actions/setup-node@v4
+        with:
+          node-version: latest
+      - name: Build sample_c for device
+        run: $DOCKER_RUN "make -C epsilon/external_apps/sample_c VERBOSE=0 PLATFORM=device build"
+      - name: Build sample_cpp for device
+        run: $DOCKER_RUN "make -C epsilon/external_apps/sample_cpp VERBOSE=0 PLATFORM=device build"
+      - name: Build rpn_cpp for device
+        run: $DOCKER_RUN "make -C epsilon/external_apps/rpn_cpp VERBOSE=0 PLATFORM=device build"
+  rust-app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: latest
+      - name: Run cargo build
+        run: "cd epsilon/external_apps/sample_rust; rustup target add thumbv7em-none-eabihf; cargo build"

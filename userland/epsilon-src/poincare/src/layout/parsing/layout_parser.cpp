@@ -1,0 +1,225 @@
+#include "layout_parser.h"
+
+#include <omg/unreachable.h>
+#include <poincare/src/expression/k_tree.h>
+#include <poincare/src/expression/symbol.h>
+#include <poincare/src/layout/grid.h>
+#include <poincare/src/layout/sequence.h>
+#include <poincare/src/memory/n_ary.h>
+#include <poincare/src/memory/tree_stack_checkpoint.h>
+#include <poincare/variable_context.h>
+
+#include "rack_parser.h"
+
+namespace Poincare::Internal::Parser {
+
+Type ExpressionType(LayoutType type) {
+  switch (type) {
+    case LayoutType::Fraction:
+      return Type::Div;
+    case LayoutType::Binomial:
+    case LayoutType::PtBinomial:
+      return Type::Binomial;
+    case LayoutType::PtPermute:
+      return Type::Permute;
+    case LayoutType::Abs:
+      return Type::Abs;
+    case LayoutType::Ceil:
+      return Type::Ceil;
+    case LayoutType::Floor:
+      return Type::Floor;
+    case LayoutType::VectorNorm:
+      return Type::Norm;
+    case LayoutType::Diff:
+      return Type::Diff;
+    case LayoutType::Integral:
+      return Type::Integral;
+    case LayoutType::Product:
+      return Type::Product;
+    case LayoutType::Sum:
+      return Type::Sum;
+    case LayoutType::ListSequence:
+      return Type::ListSequence;
+    case LayoutType::Conj:
+      return Type::Conj;
+    case LayoutType::Sqrt:
+      return Type::Sqrt;
+    case LayoutType::Root:
+      return Type::Root;
+    case LayoutType::Parentheses:
+      return Type::Parentheses;
+    case LayoutType::Point2D:
+      return Type::Point;
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+Tree* PrivateParse(const Tree* l, ParsingContext parsingContext) {
+  if (l->isRackLayout()) {
+    // TODO: should be inlined in the caller
+    return RackParser(l, parsingContext).parseRack();
+  }
+
+  switch (l->layoutType()) {
+    case LayoutType::VerticalOffset:
+    case LayoutType::AsciiCodePoint:
+    case LayoutType::UnicodeCodePoint:
+    case LayoutType::CombinedCodePoints:
+      assert(false);
+    case LayoutType::Prison: {
+      return LayoutParser::Parse(l->child(0), parsingContext);
+    }
+    case LayoutType::Parentheses:
+    case LayoutType::CurlyBraces: {
+      parsingContext.metadata.isCommaSeparatedList = true;
+      Tree* list = RackParser(l->child(0), parsingContext).parseRack();
+      if (l->layoutType() == LayoutType::Parentheses) {
+        switch (list->numberOfChildren()) {
+          case 0:
+            RackParser::RaiseParseFail(SyntaxError::EmptyParentheses);
+          case 1:
+            list->cloneNodeOverNode(KParentheses);
+            break;
+#if POINCARE_POINT
+          case 2:
+            list->cloneNodeOverNode(KPoint);
+            break;
+#endif
+          default:
+            RackParser::RaiseParseFail(
+                SyntaxError::TooManyParametersInParentheses);
+        }
+      }
+      return list;
+    }
+    case LayoutType::Piecewise:
+    case LayoutType::Matrix: {
+      const Grid* grid = Grid::From(l);
+      Tree* expr;
+      if (grid->isMatrixLayout()) {
+        expr = SharedTreeStack->pushMatrix(grid->numberOfRows() - 1,
+                                           grid->numberOfColumns() - 1);
+      } else {
+        expr = SharedTreeStack->pushPiecewise(0);
+      }
+      int n = grid->numberOfChildren();
+      int actualNumberOfChildren = 0;
+      for (int i = 0; i < n; i++) {
+        if (grid->childIsPlaceholder(i)) {
+          continue;
+        }
+        LayoutParser::Parse(grid->child(i),
+                            parsingContext.cloneWithoutMetadata());
+        actualNumberOfChildren++;
+      }
+      if (expr->isPiecewise()) {
+        /* Update number of children to take the bottom right condition only if
+         * it is not a placeholder */
+        NAry::SetNumberOfChildren(expr, actualNumberOfChildren);
+      }
+      return expr;
+    }
+#if POINCARE_SEQUENCE
+    case LayoutType::Sequence: {
+      const Grid* grid = Grid::From(l);
+      assert(grid->numberOfColumns() == 2);
+      assert(grid->numberOfRows() >= 1);
+      assert(grid->numberOfRows() <= 3);
+
+      // Sequence name
+      const Tree* currentChild = grid->child(0);
+      Tree* expr = LayoutParser::Parse(currentChild,
+                                       parsingContext.cloneWithoutMetadata());
+      // Note: Raise ParseFail instead of asserting if this assertion ever fails
+      assert(expr->isUserSequence());
+
+      // Sequence expression
+      currentChild = currentChild->nextTree();
+      // Only allow empty sequence if preserveInput is true
+      if (Rack::IsEmpty(currentChild) && parsingContext.params.preserveInput) {
+        SharedTreeStack->pushBlock(Type::EmptySequenceExpression);
+      } else {
+        LayoutParser::Parse(currentChild,
+                            parsingContext.cloneWithoutMetadata());
+      }
+
+      // First rank
+      SharedTreeStack->pushInteger(SequenceLayout::FirstRank(l));
+
+      expr->cloneNodeAtNode(KSequenceExplicit);
+      // Initial conditions
+      for (int row = 1; row < grid->numberOfRows(); row++) {
+        /* The structure of the grid is:
+         * sequenceLayout(mainName, mainExpr, firstInitialConditionName,
+         * firstInitialConditionExpr, secondInitialConditionName,
+         * secondInitialConditionExpr)
+         * When we enter this loop, currentChild is at mainExpr. Skip next child
+         * to get to the next expression. */
+        currentChild = currentChild->nextTree()->nextTree();
+        LayoutParser::Parse(currentChild,
+                            parsingContext.cloneWithoutMetadata());
+        expr->cloneNodeOverNode(row == 1 ? KSequenceSingleRecurrence
+                                         : KSequenceDoubleRecurrence);
+      }
+      return expr;
+    }
+#endif
+    default: {
+      // The layout children map one-to-one to the expression
+      Tree* result =
+          SharedTreeStack->pushBlock(ExpressionType(l->layoutType()));
+      int n = l->numberOfChildren();
+
+      /* TODO: The behaviour relative to the parametric expressions
+       * is duplicated with RackParser::parseReservedFunction */
+      bool isParametric = result->isParametric();
+      TreeVariableContext parameterContext(nullptr, nullptr);  // For parametric
+
+      for (int i = 0; i < n; i++) {
+        const SymbolContext* childContext = parsingContext.context;
+        bool preserveInput = parsingContext.params.preserveInput;
+        if (isParametric) {
+          if (i == Parametric::k_variableIndex) {
+            /* Set preserveInput to true for the variable so that it's
+             * properly parsed as a symbol, and not as a unit or a product. */
+            preserveInput = true;
+          } else if (Parametric::IsFunctionIndex(i, result)) {
+            // Use the parameter context for the function child
+            childContext = &parameterContext;
+          }
+        }
+
+        ParserHelper::ParsingParameters childParams = parsingContext.params;
+        childParams.preserveInput = preserveInput;
+
+        Tree* parsedChild = LayoutParser::Parse(
+            l->child(i), {.context = childContext, .params = childParams});
+
+        if (isParametric && i == Parametric::k_variableIndex) {
+          /* Store the variable child in the parameter context */
+          if (!parsedChild->isUserVariable()) {
+            RackParser::RaiseParseFail(
+                SyntaxError::ParametricMustDependOnVariableNatural);
+          }
+          parameterContext = TreeVariableContext(
+              Symbol::GetName(parsedChild), nullptr, parsingContext.context);
+          /* Preparing the context for the function child relies on the variable
+           * child being parsed first */
+          static_assert(Parametric::k_variableIndex == 0);
+        }
+      }
+
+      return result;
+    }
+  }
+}
+
+Tree* LayoutParser::Parse(const Tree* l, ParsingContext parsingContext) {
+  // This factorizes the assertion that PrivateParse never returns nullptr.
+  Tree* result = PrivateParse(l, parsingContext);
+  assert(result);
+  return result;
+}
+
+}  // namespace Poincare::Internal::Parser

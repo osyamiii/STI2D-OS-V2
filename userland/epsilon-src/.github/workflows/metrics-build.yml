@@ -1,0 +1,125 @@
+name: Build metrics
+# read-only repo token
+on:
+  workflow_call:
+    inputs:
+      project-path:
+        type: string
+      platform:
+        type: string
+      elfs:
+        type: string
+      elfs-if-core:
+        type: string
+      elfs-summary:
+        type: string
+      elfs-summary-if-core:
+        type: string
+      elf-bloaty:
+        type: string
+      app-sizes:
+        type: boolean
+
+jobs:
+  binary-size:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    env:
+      MAKEFLAGS: -j2 PLATFORM=${{ inputs.platform }} DEBUG=0 VERBOSE=0
+    steps:
+      - name: Fetch target branch and PR branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 200
+      - name: Find most recent ancestor of PR and target branch
+        id: common_ancestor
+        run: echo "commit_sha=$(git merge-base ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})" >> $GITHUB_OUTPUT
+
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: device
+
+      - name: Checkout to most recent ancestor
+        run: git checkout ${{ steps.common_ancestor.outputs.commit_sha }}
+
+      - name: Check for core
+        id: elfs
+        run: |
+          if [[ -e shared/ion/src/device/core ]]; then
+            ELFS="${{ inputs.elfs }} ${{ inputs.elfs-if-core }}"
+            ELFS_SUMMARY="${{ inputs.elfs-summary }} ${{ inputs.elfs-summary-if-core }}"
+          else
+            ELFS="${{ inputs.elfs }}"
+            ELFS_SUMMARY="${{ inputs.elfs-summary }}"
+          fi
+          echo "elfs=$ELFS" >> $GITHUB_OUTPUT
+          echo "elfs-summary=$ELFS_SUMMARY" >> $GITHUB_OUTPUT
+          GOALS=$(for e in $ELFS; do basename $e; done | paste -sd' ' -)
+          echo "goals=$GOALS" >> $GITHUB_OUTPUT
+
+      - name: Build common ancestor
+        run: $DOCKER_RUN "make -C ${{ inputs.project-path }} ${{ steps.elfs.outputs.goals }}"
+      - name: Save ancestor build
+        run: mv ${{ inputs.project-path }}/output/release/${{ inputs.platform }} base
+
+      - name: Checkout head of PR
+        run: git checkout ${{ github.event.pull_request.head.sha }}
+
+      - name: Build head
+        run: $DOCKER_RUN "make -C ${{ inputs.project-path }} ${{ steps.elfs.outputs.goals }}"
+      - name: Save head build
+        run: mv ${{ inputs.project-path }}/output/release/${{ inputs.platform }} head
+
+      - name: Binary size
+        id: binary_size
+        run: |
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          $DOCKER_RUN "\$PYTHON tools/metrics/binary_size.py @Base $(for e in ${{ steps.elfs.outputs.elfs-summary }}; do echo -n "base/$e "; done) @Head  $(for e in ${{ steps.elfs.outputs.elfs-summary }}; do echo -n "head/$e "; done) --sections @Flash .text .rodata .data @RAM .bss .data --summarize" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "details<<EOF" >> $GITHUB_OUTPUT
+          $DOCKER_RUN "\$PYTHON tools/metrics/binary_size.py @Base $(for e in ${{ steps.elfs.outputs.elfs }}; do echo -n "base/$e "; done) @Head  $(for e in ${{ steps.elfs.outputs.elfs }}; do echo -n "head/$e "; done) --sections .text .rodata .bss .data" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: App sizes
+        if: ${{ inputs.app-sizes }}
+        id: apps_sizes
+        run: |
+          echo "details<<EOF" >> $GITHUB_OUTPUT
+          $DOCKER_RUN "\$PYTHON tools/metrics/binary_size.py @Base base/userland.onboarding.beta.allow3rdparty.A.elf @Head head/userland.onboarding.beta.allow3rdparty.A.elf --app-sizes" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run bloaty
+        id: run_bloaty
+        run: |
+          echo "details<<EOF" >> $GITHUB_OUTPUT
+          $DOCKER_RUN "bloaty --domain=vm -d symbols head/${{ inputs.elf-bloaty }} -- base/${{ inputs.elf-bloaty }}"  >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Add comment
+        uses: ./.github/actions/post-comment
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          pr-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### ${{ inputs.project-path == 'scandium' && 'Scandium' || 'Epsilon' }} Binary size analysis
+            ${{ steps.binary_size.outputs.summary }}
+
+            <details>
+            <summary>Full details</summary>
+
+            ### Detailed difference
+            <pre>
+            ${{ steps.run_bloaty.outputs.details }}
+            </pre>
+
+            ${{ inputs.app-sizes && '\n### Apps\n\n' || '' }}${{ inputs.app-sizes && steps.apps_sizes.outputs.details || '' }}
+
+
+            ### ${{ inputs.platform }}
+
+
+            ${{ steps.binary_size.outputs.details }}
+
+            </details>

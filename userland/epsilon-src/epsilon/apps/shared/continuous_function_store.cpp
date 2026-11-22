@@ -1,0 +1,162 @@
+#include "continuous_function_store.h"
+
+#include <escher/theme/data_colors.h>
+#include <ion.h>
+#include <omg/utf8_helper.h>
+
+#include "global_store.h"
+
+using namespace Escher;
+
+namespace Shared {
+
+void ContinuousFunctionStore::removeModel(Ion::Storage::Record record) {
+  OMG::ExpiringPointer<ContinuousFunction> f = modelForRecord(record);
+  if (f->isDerivative()) {
+    int order = f->derivationOrder();
+    f->parentFunction()->setDisplayPlotDerivative(order, false);
+    return;
+  }
+  GlobalStore::DeleteParametricComponentsOfRecord(record);
+  GlobalStore::DeleteDerivativeOfRecord(record);
+  ExpressionModelStore::removeModel(record);
+}
+
+void ContinuousFunctionStore::removeAll() {
+  FunctionStore::removeAll();
+  m_memoizedNumberOfActiveFunctionsInPlot = 0;
+  for (int i = 0; i < k_maxNumberOfMemoizedModels; i++) {
+    m_functions[i] = ContinuousFunction();
+  }
+  /* m_storageCheckSum must be updated too, otherwise, if removed functions are
+   * added again, m_memoizedNumberOfActiveFunctions will not be updated. */
+  m_storageCheckSum = Ion::Storage::FileSystem::sharedFileSystem->checksum();
+}
+
+bool ContinuousFunctionStore::displaysOnlyCartesianFunctions(
+    int* nbActiveFunctions) const {
+  int nActive = numberOfActiveFunctions();
+  if (nbActiveFunctions != nullptr) {
+    *nbActiveFunctions = nActive;
+  }
+  return numberOfActiveFunctionsWithProperty(
+             &ContinuousFunctionProperties::isCartesian) == nActive;
+}
+
+int ContinuousFunctionStore::numberOfActiveFunctions() const {
+  uint32_t checksum = Ion::Storage::FileSystem::sharedFileSystem->checksum();
+  if (m_memoizedNumberOfActiveFunctionsInPlot < 0 ||
+      checksum != m_storageCheckSum) {
+    m_storageCheckSum = checksum;
+    m_memoizedNumberOfActiveFunctionsInPlot = numberOfActiveFunctionsInPlot();
+  } else {
+    assert(m_memoizedNumberOfActiveFunctionsInPlot ==
+           numberOfActiveFunctionsInPlot());
+  }
+  return m_memoizedNumberOfActiveFunctionsInPlot;
+}
+
+using ErrorStatus = Ion::Storage::Record::ErrorStatus;
+
+void ContinuousFunctionStore::fillLastFreeColors(bool* colorIsFree) const {
+  constexpr int paletteSize = k_numberOfDataColors;
+  int nFree = paletteSize;
+  for (int c = 0; c < paletteSize; c++) {
+    colorIsFree[c] = true;
+  }
+
+  // Loop over existing function models starting from the most recent one
+  int i = numberOfModels() - 1;
+  while (i >= 0) {
+    OMG::ExpiringPointer<const ContinuousFunction> f =
+        modelForRecord(recordAtIndex(i));
+    int colorIndex = static_cast<uint8_t>(f->color()) -
+                     static_cast<uint8_t>(DataColorComponent(0));
+    assert(colorIndex >= 0 && colorIndex < k_numberOfDataColors);
+    if (colorIsFree[colorIndex]) {
+      colorIsFree[colorIndex] = false;
+      nFree--;
+    }
+    // Stop when there is only one free color
+    if (nFree <= 1) {
+      return;
+    }
+    i--;
+  }
+}
+
+void ContinuousFunctionStore::tidyCaches() const {
+  for (int i = 0; i < maxNumberOfMemoizedModels(); i++) {
+    memoizedModelAtIndex(i)->tidyCache();
+  }
+}
+
+ThemeComponent ContinuousFunctionStore::colorForNewModel() const {
+  // Check first last functions colors until there is at most 1 free color
+  constexpr int paletteSize = k_numberOfDataColors;
+  bool colorIsFree[paletteSize];
+  fillLastFreeColors(colorIsFree);
+  // Take first free color
+  for (int c = 0; c < paletteSize; c++) {
+    if (colorIsFree[c]) {
+      return DataColorComponent(c);
+    }
+  }
+  OMG_UNREACHABLE
+}
+
+ContinuousFunction ContinuousFunctionStore::newModel(const char* name,
+                                                     ErrorStatus* error) {
+  return ContinuousFunction::NewModel(error, name, colorForNewModel());
+}
+
+Ion::Storage::Record::ErrorStatus ContinuousFunctionStore::addDerivativeModel(
+    const Ion::Storage::Record parentRecord, uint8_t order) {
+  assert(order == 1 || order == 2);
+  constexpr size_t bufferSize = ContinuousFunction::k_maxDefaultNameSize;
+  char modelName[bufferSize];
+  size_t length = UTF8Helper::WriteCodePoint(
+      modelName, bufferSize, ContinuousFunction::k_unnamedRecordFirstChar);
+  Ion::Storage::FileSystem::sharedFileSystem->firstAvailableNameFromPrefix(
+      modelName, length, bufferSize, modelExtension());
+  ErrorStatus error;
+  ContinuousFunction f = newModel(modelName, &error);
+  if (error != ErrorStatus::None) {
+    return error;
+  }
+  f.setDerivationOrder(order);
+  f.setParentRecord(parentRecord);
+  OMG::ExpiringPointer<ContinuousFunction> parent =
+      modelForRecord(parentRecord);
+  f.setActive(parent->isActive());
+  return ErrorStatus::None;
+}
+
+Ion::Storage::Record::ErrorStatus ContinuousFunctionStore::addEmptyModel() {
+  constexpr size_t bufferSize = ContinuousFunction::k_maxDefaultNameSize;
+  char name[bufferSize];
+  size_t length = UTF8Helper::WriteCodePoint(
+      name, bufferSize, ContinuousFunction::k_unnamedRecordFirstChar);
+  Ion::Storage::FileSystem::sharedFileSystem->firstAvailableNameFromPrefix(
+      name, length, bufferSize, modelExtension());
+  Ion::Storage::Record::ErrorStatus error =
+      Ion::Storage::Record::ErrorStatus::RecordDoesNotExist;
+
+  newModel(name, &error);
+  return error;
+}
+
+ExpressionModelHandle* ContinuousFunctionStore::setMemoizedModelAtIndex(
+    int cacheIndex, Ion::Storage::Record record) const {
+  assert(cacheIndex >= 0 && cacheIndex < maxNumberOfMemoizedModels());
+  m_functions[cacheIndex] = ContinuousFunction(record);
+  return &m_functions[cacheIndex];
+}
+
+ExpressionModelHandle* ContinuousFunctionStore::memoizedModelAtIndex(
+    int cacheIndex) const {
+  assert(cacheIndex >= 0 && cacheIndex < maxNumberOfMemoizedModels());
+  return &m_functions[cacheIndex];
+}
+
+}  // namespace Shared

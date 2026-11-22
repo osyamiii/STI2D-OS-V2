@@ -1,0 +1,165 @@
+name: Epsilon
+
+on:
+  push:
+    branches: master
+    paths-ignore:
+      - '**/*.md'
+      - '**/scandium/**'
+      - 'epsilon/external_apps/**'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '**/scandium/**'
+      - 'poincare/doc/**'
+      - 'epsilon/external_apps/**'
+  # TODO many steps may be skipped when changes are all in
+  # shared/ion/src/device/**, split ci into simu/device ?
+
+  workflow_dispatch:
+    inputs:
+      linux:
+        type: boolean
+        default: false
+      device:
+        type: boolean
+        default: false
+      windows:
+        type: boolean
+        default: false
+      macos:
+        type: boolean
+        default: false
+      web:
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAKEFLAGS: -j2
+
+jobs:
+  device:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.device)) }}
+    strategy:
+      matrix:
+        model: [n0110, n0115, n0120]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: device
+      - name: Build userlands
+        # Since both slots have the exact same amount of Flash reserved, it is pointless to build both the A and B elfs for every variant.
+        # As an exception, because we'll build epsilon.dfu with both userland.A.elf and userland.B.elf, we still build those here
+        # TODO: It is also probably useless to build so many variants
+        run: $DOCKER_RUN "make -C epsilon PLATFORM=${{ matrix.model }} userland.A.elf userland.B.elf userland.allow3rdparty.A.elf userland.onboarding.A.elf userland.onboarding.allow3rdparty.A.elf userland.onboarding.update.A.elf userland.onboarding.beta.A.elf userland.onboarding.beta.allow3rdparty.A.elf"
+  windows:
+    timeout-minutes: 60
+    runs-on: windows-latest
+    if: ${{ (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.windows)) }}
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-arm-none-eabi-gcc
+      - uses: actions/checkout@v6
+      - run: tools/setup.sh
+      - run: make -C epsilon PLATFORM=simulator ASSERTIONS=1 epsilon.exe
+      - run: make -j8 userland.A.elf
+  web:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'push' || fromJSON(github.event.inputs.web)) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Read Emscripten version
+        run: echo "EMSDK_VERSION=$(cat .emsdk-version)" >> $GITHUB_ENV
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: web
+          emsdk-version: ${{ env.EMSDK_VERSION }}
+      - run: $DOCKER_RUN "make -C epsilon PLATFORM=simulator TARGET=web ASSERTIONS=1 epsilon.html"
+        timeout-minutes: 5
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: epsilon.html
+          path: epsilon/output/debug/optimized/web/epsilon.html
+          retention-days: 3
+
+  web-tests:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    if: ${{ (fromJSON(vars.ADVANCED_JOBS) || (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.web))) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Read Emscripten version
+        run: echo "EMSDK_VERSION=$(cat .emsdk-version)" >> $GITHUB_ENV
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: web
+          emsdk-version: ${{ env.EMSDK_VERSION }}
+      - run: $DOCKER_RUN "make -C epsilon PLATFORM=simulator TARGET=web ASSERTIONS=1 epsilon_test.js"
+      - run: $DOCKER_RUN "node epsilon/output/debug/optimized/web/epsilon_test.js --headless --limit-stack-usage"
+        timeout-minutes: 20
+  linux:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'pull_request' || fromJSON(github.event.inputs.linux)) }}
+    env:
+      MAKEFLAGS: "-j2 STRICT_WARNINGS=1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build container and define DOCKER_RUN
+        uses: ./.github/actions/docker-builder
+        with:
+          platform: linux
+
+      # TODO_PCJ: Add ASAN=1 and TIDY=1
+      - name: Build epsilon.bin and epsilon_test.bin
+        run: $DOCKER_RUN "make -C epsilon TOOLCHAIN=host-clang PLATFORM=simulator ASSERTIONS=1 VERBOSE=0 epsilon.bin epsilon_test.bin"
+      - name: Run unit tests (in parallel)
+        run: |
+          $DOCKER_RUN "make -C epsilon TOOLCHAIN=host-clang PLATFORM=simulator ASSERTIONS=1 VERBOSE=0 epsilon_test.bin.run_parallel"
+        id: run-tests
+        continue-on-error: true
+      - name: Run unit tests sequentially (if parallel run failed)
+        if: steps.run-tests.outcome == 'failure'
+        run: $DOCKER_RUN "rm -f core; epsilon/output/debug/optimized/linux/epsilon_test.bin --headless --limit-stack-usage || (eu-stack --core core; exit 1)"
+  macos:
+    timeout-minutes: 60
+    runs-on: macOS-latest
+    if: ${{ (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.macos)) }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: tools/setup.sh --ci --only-simulator
+      - run: make -C epsilon PLATFORM=simulator ASSERTIONS=1 ARCH=x86_64 epsilon_test.bin
+      - run: epsilon/output/debug/optimized/macos/x86_64/epsilon_test.bin --headless --limit-stack-usage
+      - run: make -C epsilon PLATFORM=simulator ASSERTIONS=1 epsilon.app
+  screenshots:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/compare-screenshots.yml
+    with:
+      project-path: epsilon
+      has-cas-dataset: true
+      post-comment: true
+    secrets: inherit

@@ -1,0 +1,29 @@
+SOURCES_apps += $(addprefix $(PATH_apps)/sequence/,$(addsuffix :-test, \
+  app.cpp \
+  graph/cobweb_controller.cpp \
+  graph/cobweb_graph_view.cpp \
+  graph/curve_parameter_controller.cpp \
+  graph/curve_view_range.cpp \
+  graph/go_to_parameter_controller.cpp \
+  graph/graph_controller.cpp \
+  graph/graph_view.cpp \
+  graph/term_sum_controller.cpp \
+  list/editable_sequence_cell.cpp \
+  list/list_controller.cpp \
+  list/list_parameter_controller.cpp \
+  list/notation_parameter_controller.cpp \
+  list/sequence_cell.cpp \
+  list/sequence_toolbox_data_source.cpp \
+  list/type_parameter_controller.cpp \
+  values/interval_parameter_controller.cpp \
+  values/sequence_column_parameter_controller.cpp \
+  values/sum_column_parameter_controller.cpp \
+  values/values_controller.cpp \
+) \
+  test/poincare.cpp:+test \
+  test/sequence.cpp:+test \
+)
+
+$(call depends_on_transparent_themed_image,apps,$(PATH_apps)/sequence/app.cpp,$(PATH_apps)/icons/light/sequence_light_icon.png,$(PATH_apps)/icons/dark/sequence_dark_icon.png,:-test)
+
+$(call i18n_without_universal,sequence/i18n/base)

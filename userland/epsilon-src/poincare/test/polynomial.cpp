@@ -1,0 +1,156 @@
+#include <poincare/src/expression/advanced_reduction.h>
+#include <poincare/src/expression/degree.h>
+#include <poincare/src/expression/k_tree.h>
+#include <poincare/src/expression/polynomial.h>
+#include <poincare/src/expression/projection.h>
+#include <poincare/src/expression/systematic_reduction.h>
+
+#include "helper.h"
+#include "helpers/symbol_store.h"
+
+using namespace Poincare::Internal;
+
+QUIZ_CASE(pcj_polynomial_operations) {
+  /* A = x^2 + 3*x*y + y + 1 */
+  const Tree* polA =
+      KPol(Exponents<2, 1, 0>(), "x"_e, 1_e, KPol(Exponents<1>(), "y"_e, 3_e),
+           KPol(Exponents<1, 0>(), "y"_e, 1_e, 1_e));
+  /* B = x^3 + 2*x*y^2 + 7*x*y + 23 */
+  const Tree* polB = KPol(Exponents<3, 1, 0>(), "x"_e, 1_e,
+                          KPol(Exponents<2, 1>(), "y"_e, 2_e, 7_e), 23_e);
+  /* C = -2x^3 + 7*x*y + 23 */
+  const Tree* polC = KPol(Exponents<3, 1, 0>(), "x"_e, -2_e,
+                          KPol(Exponents<1>(), "y"_e, 7_e), 23_e);
+
+  /* Inverse(A) = -x^2 - 3*x*y - y - 1 */
+  Tree* inv = polA->cloneTree();
+  Polynomial::Inverse(inv);
+  assert_trees_are_equal(inv, KPol(Exponents<2, 1, 0>(), "x"_e, -1_e,
+                                   KPol(Exponents<1>(), "y"_e, -3_e),
+                                   KPol(Exponents<1, 0>(), "y"_e, -1_e, -1_e)));
+
+  /* Normalize(C) = 2x^3 - 7*x*y - 23*/
+  Tree* norm = polC->cloneTree();
+  Polynomial::Normalize(norm);
+  assert_trees_are_equal(norm, KPol(Exponents<3, 1, 0>(), "x"_e, 2_e,
+                                    KPol(Exponents<1>(), "y"_e, -7_e), -23_e));
+
+  /* A + B = x^3 + x^2 + 2*x*y^2 + 10*x*y + y + 24 */
+  assert_trees_are_equal(
+      Polynomial::Addition(polA->cloneTree(), polB->cloneTree()),
+      TreeRef(KPol(Exponents<3, 2, 1, 0>(), "x"_e, 1_e, 1_e,
+                   KPol(Exponents<2, 1>(), "y"_e, 2_e, 10_e),
+                   KPol(Exponents<1, 0>(), "y"_e, 1_e, 24_e))));
+  SharedTreeStack->flush();
+
+  /* B + A = x^3 + x^2 + 2*x*y^2 + 10*x*y + y + 24 */
+  assert_trees_are_equal(
+      Polynomial::Addition(polB->cloneTree(), polA->cloneTree()),
+      KPol(Exponents<3, 2, 1, 0>(), "x"_e, 1_e, 1_e,
+           KPol(Exponents<2, 1>(), "y"_e, 2_e, 10_e),
+           KPol(Exponents<1, 0>(), "y"_e, 1_e, 24_e)));
+  SharedTreeStack->flush();
+
+  // TODO: test A-B and B-A!
+
+  /* A * B = x^5 + 3yx^4 + (2y^2+8y+1)*x^3 + (6y^3+21y^2+23)x^2 +
+  (2y^3+9y^2+
+   * 76y)x + 23y + 23 */
+  assert_trees_are_equal(
+      Polynomial::Multiplication(TreeRef(polA->cloneTree()),
+                                 TreeRef(polB->cloneTree())),
+      KPol(Exponents<5, 4, 3, 2, 1, 0>(), "x"_e, 1_e,
+           KPol(Exponents<1>(), "y"_e, 3_e),
+           KPol(Exponents<2, 1, 0>(), "y"_e, 2_e, 8_e, 1_e),
+           KPol(Exponents<3, 2, 0>(), "y"_e, 6_e, 21_e, 23_e),
+           KPol(Exponents<3, 2, 1>(), "y"_e, 2_e, 9_e, 76_e),
+           KPol(Exponents<1, 0>(), "y"_e, 23_e, 23_e)));
+  SharedTreeStack->flush();
+
+  /* Test variable order:
+   * (y^2) + ((y+1)x + 1 = (y+1)x + y^2 + 1 */
+  assert_trees_are_equal(
+      Polynomial::Addition(
+          TreeRef(KPol(Exponents<2>(), "y"_e, 1_e)),
+          TreeRef(KPol(Exponents<1, 0>(), "x"_e,
+                       KPol(Exponents<1, 0>(), "y"_e, 1_e, 1_e), 1_e))),
+      KPol(Exponents<1, 0>(), "x"_e, KPol(Exponents<1, 0>(), "y"_e, 1_e, 1_e),
+           KPol(Exponents<2, 0>(), "y"_e, 1_e, 1_e)));
+  SharedTreeStack->flush();
+
+  // A = x^2y^2 + y
+  polA = KPol(Exponents<2, 0>(), "x"_e, KPol(Exponents<2>(), "y"_e, 1_e),
+              KPol(Exponents<1>(), "y"_e, 1_e));
+  // B = xy + 1
+  polB = KPol(Exponents<1, 0>(), "x"_e, KPol(Exponents<1>(), "y"_e, 1_e), 1_e);
+  // A / B = (xy + 1)*(xy - 1) + y + 1
+  auto [quotient, remainder] =
+      Polynomial::PseudoDivision(polA->cloneTree(), polB->cloneTree());
+  assert_trees_are_equal(
+      quotient,
+      KPol(Exponents<1, 0>(), "x"_e, KPol(Exponents<1>(), "y"_e, 1_e), -1_e));
+  assert_trees_are_equal(remainder, KPol(Exponents<1, 0>(), "y"_e, 1_e, 1_e));
+}
+
+void assert_polynomial_degree_is(
+    const Poincare::SimplificationParameters& simplificationParameters,
+    const char* input, int expectedDegree, const char* symbolName = "x") {
+  Tree* expression = parse(input, simplificationParameters.user.context);
+  Simplification::ProjectAndReduce(expression, simplificationParameters);
+  int degree = Degree::Get(expression, symbolName);
+  quiz_assert(degree == expectedDegree);
+  expression->removeTree();
+}
+
+QUIZ_CASE(pcj_polynomial_degree) {
+  PoincareTest::SymbolStore symbolStore;
+  Poincare::SimplificationParameters parameters = {
+      .user = {.complexFormat = Cartesian,
+               .angleUnit = Radian,
+               .context = symbolStore},
+      .projectionPolicy =
+          {.symbolic = Poincare::SymbolicComputation::ReplaceDefinedSymbols},
+      .reductionPolicy = {.advanced = false}};
+
+  assert_polynomial_degree_is(parameters, "x+1", 1);
+  assert_polynomial_degree_is(parameters, "cos(2)+1", 0);
+  assert_polynomial_degree_is(parameters, "diff(3×x+x,x,2)", 0);
+  assert_polynomial_degree_is(parameters, "diff(3×x+x,x,x)", 0);
+  assert_polynomial_degree_is(parameters, "diff(3×x+x,x,x)", 0, "a");
+  assert_polynomial_degree_is(parameters, "(3×x+2)/3", 1);
+  assert_polynomial_degree_is(parameters, "(3×x+2)/x", -1);
+  assert_polynomial_degree_is(parameters, "int(2×x,x, 0, 1)", 0);
+  assert_polynomial_degree_is(parameters, "int(2×abs(x),x, 0, 1)", -1);
+  assert_polynomial_degree_is(parameters, "int(2×x,x, 0, 1)", 0, "a");
+  assert_polynomial_degree_is(parameters, "[[1,2][3,4]]", -1);
+  assert_polynomial_degree_is(parameters, "(x^2+2)×(x+1)", 3);
+  assert_polynomial_degree_is(parameters, "-(x+1)", 1);
+  assert_polynomial_degree_is(parameters, "(x^2+2)^(3)", 6);
+  assert_polynomial_degree_is(parameters, "2-x-x^3", 3);
+  assert_polynomial_degree_is(parameters, "π×x", 1);
+  assert_polynomial_degree_is(parameters, "x+π^(-3)", 1);
+  assert_polynomial_degree_is(parameters, "x^256", 256);
+  // polynomial degree is clamped to a maximum value
+  assert_polynomial_degree_is(parameters, "x^257",
+                              Degree::k_maxPolynomialDegree);
+
+  // f: y→y^2+πy+1
+  PoincareTest::store("1+π×y+y^2→f(y)", symbolStore);
+  assert_polynomial_degree_is(parameters, "f(x)", 2);
+  // With y=1
+  PoincareTest::store("1→y", symbolStore);
+  symbolStore.reset();
+  // a : undef and f : y→ay+πy+1
+  PoincareTest::store("undef→a", symbolStore);
+  PoincareTest::store("1+π×y+y×a→f(y)", symbolStore);
+  assert_polynomial_degree_is(parameters, "f(x)",
+                              0);  // a is undefined
+  // With a = 1
+  PoincareTest::store("1→a", symbolStore);
+  assert_polynomial_degree_is(parameters, "f(x)", 1);
+  symbolStore.reset();
+
+  parameters.user.complexFormat = Real;
+  assert_polynomial_degree_is(parameters, "√(-1)×x", 0);
+  assert_polynomial_degree_is(parameters, "√(x)", -1);
+}

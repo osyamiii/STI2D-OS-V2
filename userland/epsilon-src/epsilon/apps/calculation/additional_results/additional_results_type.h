@@ -1,0 +1,87 @@
+#pragma once
+
+#include <poincare/symbol_context.h>
+#include <poincare/user_expression.h>
+
+namespace Calculation {
+
+struct AdditionalResultsType {
+  bool integer : 1;
+  bool rational : 1;
+  bool directTrigonometry : 1;
+  bool inverseTrigonometry : 1;
+  bool unit : 1;
+  bool matrix : 1;
+  bool vector : 1;
+  bool complex : 1;
+  bool function : 1;
+  bool scientificNotation : 1;
+  bool empty : 1;
+
+  bool isNotEmpty() const {
+    assert(!empty == integer || rational || directTrigonometry ||
+           inverseTrigonometry || unit || matrix || vector || complex ||
+           function || scientificNotation);
+    return !empty;
+  }
+
+  bool isUninitialized() const {
+    return !integer && !rational && !directTrigonometry &&
+           !inverseTrigonometry && !unit && !matrix && !vector && !complex &&
+           !function && !scientificNotation && !empty;
+  }
+
+  static AdditionalResultsType AdditionalResultsForExpressions(
+      const Poincare::UserExpression& input,
+      const Poincare::UserExpression& exactOutput,
+      const Poincare::UserExpression& approximateOutput,
+      const Poincare::Preferences::CalculationPreferences
+          calculationPreferences,
+      const Poincare::SymbolContext& symbolContext);
+
+  static bool ForbidAdditionalResults(
+      const Poincare::UserExpression& input,
+      const Poincare::UserExpression& exactOutput,
+      const Poincare::UserExpression& approximateOutput);
+
+  static bool HasComplex(const Poincare::UserExpression& approximateOutput,
+                         const Poincare::Preferences::CalculationPreferences
+                             calculationPreferences,
+                         const Poincare::SymbolContext& symbolContext);
+  static bool HasDirectTrigo(const Poincare::UserExpression& input,
+                             const Poincare::UserExpression& exactOutput,
+                             const Poincare::Preferences::CalculationPreferences
+                                 calculationPreferences,
+                             const Poincare::SymbolContext& symbolContext);
+  static bool HasInverseTrigo(
+      const Poincare::UserExpression& input,
+      const Poincare::UserExpression& exactOutput,
+      const Poincare::UserExpression& approximateOutput,
+      const Poincare::Preferences::CalculationPreferences
+          calculationPreferences,
+      const Poincare::SymbolContext& symbolContext);
+  static bool HasUnit(const Poincare::UserExpression& exactOutput,
+                      const Poincare::Preferences::CalculationPreferences
+                          calculationPreferences);
+  static bool HasVector(const Poincare::UserExpression& exactOutput,
+                        const Poincare::UserExpression& approximateOutput,
+                        const Poincare::Preferences::CalculationPreferences
+                            calculationPreferences,
+                        const Poincare::SymbolContext& symbolContext);
+  static bool HasMatrix(const Poincare::UserExpression& approximateOutput);
+  static bool HasFunction(const Poincare::UserExpression& input,
+                          const Poincare::UserExpression& approximateOutput);
+  static bool HasScientificNotation(
+      const Poincare::UserExpression& approximateOutput,
+      const Poincare::Preferences::CalculationPreferences
+          calculationPreferences,
+      const Poincare::SymbolContext& symbolContext);
+  static bool HasPositiveInteger(const Poincare::UserExpression&);
+  // True if the expression reduces to a non-integer rational.
+  static bool HasRational(const Poincare::UserExpression& exactOutput,
+                          const Poincare::UserParameters& userParameters);
+};
+
+constexpr AdditionalResultsType NoAdditionalResult{.empty = true};
+
+}  // namespace Calculation

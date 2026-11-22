@@ -1,0 +1,275 @@
+#include "anova_test.h"
+
+#include <omg/algorithm.h>
+#include <omg/unreachable.h>
+#include <poincare/statistics/inference.h>
+
+#include <cmath>
+
+namespace Inference {
+
+double ANOVATest::InputStatisticsData::parameter(int parameterIndex) const {
+  assert(parameterIndex >= 0 &&
+         parameterIndex < StatisticsData::k_numberOfParameters);
+  switch (parameterIndex) {
+    case 0:
+      return numberOfSamples();
+    case 1:
+      return mean();
+    case 2:
+      return sampleStdDeviation();
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+void ANOVATest::InputStatisticsData::set(double value, int parameterIndex) {
+  assert(StatisticsData::IsValueAcceptable(value, parameterIndex));
+  m_statisticsData.set(value, parameterIndex);
+}
+
+void ANOVATest::InputStatisticsData::unsetStatisticParameter(
+    int parameterIndex) {
+  m_statisticsData.set(k_undefinedValue, parameterIndex);
+}
+
+ANOVATest::GroupData GroupDataFromInputStatisticsData(
+    const ANOVATest::InputStatisticsData& inputData) {
+  return Poincare::Inference::SignificanceTest::FTest::
+      GroupDataFromStatisticsData(inputData.statisticsData());
+}
+
+void ANOVATest::computeGroupData() {
+  using namespace Poincare::Inference::SignificanceTest::FTest;
+
+  m_groupData.resize(numberOfGroups());
+  switch (m_inputMode) {
+    case InputMode::Values:
+      std::transform(m_groups.begin(), m_groups.end(), m_groupData.begin(),
+                     GroupDataFromValues);
+      break;
+    case InputMode::Statistics:
+      std::transform(m_inputStatistics.begin(), m_inputStatistics.end(),
+                     m_groupData.begin(), GroupDataFromInputStatisticsData);
+      break;
+    default:
+      OMG_UNREACHABLE;
+  }
+  assert(m_groupData.size() == static_cast<size_t>(numberOfGroups()));
+}
+
+void ANOVATest::compute() {
+  computeGroupData();
+  m_results = ComputeStatisticResults(m_groupData.span());
+  m_testCriticalValue = m_results.statistic;
+  m_pValue = m_results.pValue;
+}
+
+bool ANOVATest::validateInputs(int /* pageIndex */) {
+  if (numberOfGroups() < 2) {
+    return false;
+  }
+  switch (m_inputMode) {
+    case InputMode::Values:
+      return validateGroupInputs();
+    case InputMode::Statistics:
+      return validateStatisticInputs();
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+void ANOVATest::setValueAtPosition(double value, int row, int column) {
+  switch (m_inputMode) {
+    case InputMode::Values:
+      return setGroupValue(value, row, column);
+    case InputMode::Statistics:
+      return setStatisticParameter(value, row, column);
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+double ANOVATest::valueAtPosition(int row, int column) const {
+  switch (m_inputMode) {
+    case InputMode::Values:
+      return groupValue(row, column);
+    case InputMode::Statistics:
+      return statisticParameter(row, column);
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+bool ANOVATest::deleteValueAtPosition(int row, int column) {
+  switch (m_inputMode) {
+    case InputMode::Values:
+      return deleteGroupValue(row, column);
+    case InputMode::Statistics:
+      return deleteStatisticParameter(row, column);
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+void ANOVATest::deleteValuesInColumn(int column) {
+  assert(column >= 0 && column < numberOfGroups());
+  switch (m_inputMode) {
+    case InputMode::Values:
+      m_groups.removeAt(column);
+      return;
+    case InputMode::Statistics:
+      m_inputStatistics.removeAt(column);
+      return;
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+bool ANOVATest::authorizedValueAtPosition(double p, int row, int column) const {
+  switch (m_inputMode) {
+    case InputMode::Values:
+      return Poincare::Inference::SignificanceTest::FTest::IsObservedValueValid(
+          p);
+    case InputMode::Statistics:
+      return StatisticsData::IsValueAcceptable(p, row);
+    default:
+      OMG_UNREACHABLE;
+  }
+}
+
+void ANOVATest::setGroupValue(double value, int valueIndex, int groupIndex) {
+  assert(valueIndex >= 0 && groupIndex >= 0);
+  /* setValueAtPosition is not used for deletion in ANOVATest, the passed value
+   * must be a "real" value. */
+  assert(!std::isnan(value));
+
+  if (m_groups.size() <= static_cast<size_t>(groupIndex)) {
+    // Create one or more new groups
+    for (int i = m_groups.size(); i <= groupIndex; ++i) {
+      m_groups.push(GroupValues{});
+    }
+  }
+  assert(m_groups.size() > static_cast<size_t>(groupIndex));
+
+  GroupValues& groupValues = m_groups[groupIndex];
+  if (groupValues.size() > static_cast<size_t>(valueIndex)) {
+    // Replace an existing value
+    groupValues[valueIndex] = value;
+    return;
+  }
+  // If needed, insert empty values in the group before the new value
+  for (int i = groupValues.size(); i < valueIndex; ++i) {
+    groupValues.push(k_undefinedValue);
+  }
+  assert(groupValues.size() == static_cast<size_t>(valueIndex));
+  groupValues.push(value);
+}
+
+double ANOVATest::groupValue(int valueIndex, int groupIndex) const {
+  assert(valueIndex >= 0 && groupIndex >= 0);
+  if (static_cast<size_t>(groupIndex) >= m_groups.size()) {
+    return NAN;
+  }
+  const GroupValues& groupValues = m_groups[groupIndex];
+  if (static_cast<size_t>(valueIndex) >= groupValues.size()) {
+    return NAN;
+  }
+  return groupValues[valueIndex];
+}
+
+bool ANOVATest::deleteGroupValue(int valueIndex, int groupIndex) {
+  assert(valueIndex >= 0 && groupIndex >= 0);
+  if (static_cast<size_t>(groupIndex) >= m_groups.size()) {
+    return false;
+  }
+  GroupValues& groupValues = m_groups[groupIndex];
+  if (static_cast<size_t>(valueIndex) >= groupValues.size()) {
+    return false;
+  }
+
+  // Remove value from group
+  groupValues.removeAt(valueIndex);
+  // Remove potential empty values on top of the vector
+  while ((groupValues.size() > 0) && (std::isnan(groupValues.last()))) {
+    groupValues.pop();
+  }
+
+  if (groupValues.size() == 0) {
+    // Remove group
+    m_groups.removeAt(groupIndex);
+  }
+
+  return true;
+}
+
+bool ANOVATest::validateGroupInputs() const {
+  for (const GroupValues& group : m_groups) {
+    /* There must be two samples per group at the very minimum for statistic
+     * calculations to make any sense */
+    if (group.size() < 2) {
+      return false;
+    }
+    for (double value : group) {
+      if (std::isnan(value)) {
+        return false;
+      }
+    }
+    if (OMG::AllEqual(group.begin(), group.end())) {
+      // A group must not have a standard deviation of zero
+      return false;
+    }
+  }
+  return true;
+}
+
+void ANOVATest::setStatisticParameter(double value, int parameterIndex,
+                                      int groupIndex) {
+  assert(parameterIndex >= 0 &&
+         parameterIndex < StatisticsData::k_numberOfParameters);
+  assert(groupIndex >= 0);
+  if (groupIndex >= numberOfGroups()) {
+    for (int i = numberOfGroups(); i <= groupIndex; ++i) {
+      m_inputStatistics.push(InputStatisticsData{});
+    }
+  }
+  m_inputStatistics[groupIndex].set(value, parameterIndex);
+}
+
+double ANOVATest::statisticParameter(int parameterIndex, int groupIndex) const {
+  assert(parameterIndex >= 0 && groupIndex >= 0);
+  if (parameterIndex >= StatisticsData::k_numberOfParameters ||
+      static_cast<size_t>(groupIndex) >= m_inputStatistics.size()) {
+    return k_undefinedValue;
+  }
+  return m_inputStatistics[groupIndex].parameter(parameterIndex);
+}
+
+bool ANOVATest::deleteStatisticParameter(int parameterIndex, int groupIndex) {
+  assert(parameterIndex >= 0 && groupIndex >= 0);
+  assert(parameterIndex < StatisticsData::k_numberOfParameters);
+  if (static_cast<size_t>(groupIndex) >= m_inputStatistics.size()) {
+    return false;
+  }
+  InputStatisticsData& groupStatisticData = m_inputStatistics[groupIndex];
+  groupStatisticData.unsetStatisticParameter(parameterIndex);
+  if (groupStatisticData.isUnset()) {
+    // Remove group
+    m_inputStatistics.removeAt(groupIndex);
+  }
+
+  return true;
+}
+
+bool ANOVATest::validateStatisticInputs() const {
+  for (const InputStatisticsData& groupStatisticData : m_inputStatistics) {
+    if (std::isnan(groupStatisticData.numberOfSamples()) ||
+        std::isnan(groupStatisticData.mean()) ||
+        std::isnan(groupStatisticData.sampleStdDeviation())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace Inference

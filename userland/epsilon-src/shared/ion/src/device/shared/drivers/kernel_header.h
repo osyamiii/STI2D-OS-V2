@@ -1,0 +1,70 @@
+#pragma once
+
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+namespace Ion {
+namespace Device {
+
+class KernelHeader {
+ public:
+  constexpr KernelHeader();
+  const char* softwareVersion() const {
+    assert(m_header == Magic);
+    assert(m_footer == Magic);
+    return m_softwareVersion;
+  }
+  // TODO: add tests
+  int softwareVersionComparedTo(const char* version) {
+    const char* previousDotPosition = m_softwareVersion;
+    const char* comparedPreviousDotPosition = version;
+    while (true) {
+      const char* dotPosition = strchr(previousDotPosition + 1, '.');
+      const char* comparedDotPosition =
+          strchr(comparedPreviousDotPosition + 1, '.');
+      if (dotPosition == nullptr) {
+        assert(comparedDotPosition == nullptr);
+        dotPosition = strchr(previousDotPosition, 0);
+        comparedDotPosition = strchr(comparedPreviousDotPosition, 0);
+      }
+      size_t deltaDot = dotPosition - previousDotPosition;
+      size_t compareDeltaDot =
+          comparedDotPosition - comparedPreviousDotPosition;
+
+      if (deltaDot != compareDeltaDot) {
+        return deltaDot > compareDeltaDot;
+      } else {
+        for (size_t i = 0; i < deltaDot; i++) {
+          if (*previousDotPosition != *comparedPreviousDotPosition) {
+            return *previousDotPosition - *comparedPreviousDotPosition;
+          }
+          previousDotPosition++;
+          comparedPreviousDotPosition++;
+        }
+      }
+      if (*dotPosition == 0) {
+        return 0;
+      }
+      previousDotPosition = dotPosition;
+      comparedPreviousDotPosition = comparedDotPosition;
+    }
+  }
+  const char* commitHash() const {
+    assert(m_header == Magic);
+    assert(m_footer == Magic);
+    return m_commitHash;
+  }
+  constexpr static size_t k_softwareVersionSize = 8;
+
+ private:
+  constexpr static uint32_t Magic = 0xDEC00DF0;
+  uint32_t m_header;
+  const char m_softwareVersion[k_softwareVersionSize];
+  const char m_commitHash[8];
+  uint32_t m_footer;
+};
+
+}  // namespace Device
+}  // namespace Ion

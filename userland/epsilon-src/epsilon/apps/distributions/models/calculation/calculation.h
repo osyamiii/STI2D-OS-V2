@@ -1,0 +1,46 @@
+#pragma once
+
+#include <apps/i18n.h>
+#include <assert.h>
+#include <stdint.h>
+
+#include <new>
+
+namespace Distributions {
+
+class Distribution;
+
+class Calculation {
+  friend union DistributionBuffer;
+
+ public:
+  enum class Type : uint8_t {
+    LeftIntegral,
+    FiniteIntegral,
+    RightIntegral,
+    Discrete,
+  };
+  static bool Initialize(Calculation* calculation, Type type,
+                         Distribution* distribution,
+                         bool forceReinitialization);
+
+  Calculation(Distribution* distribution) : m_distribution(distribution) {
+    assert(distribution != nullptr);
+  }
+  virtual ~Calculation() = default;
+  virtual Type type() const = 0;
+  virtual int numberOfParameters() const = 0;
+  virtual I18n::Message legendForParameterAtIndex(int index) = 0;
+  virtual void setParameterAtIndex(double f, int index) = 0;
+  virtual double parameterAtIndex(int index) = 0;
+  virtual double lowerBound() const;
+  virtual double upperBound() const;
+
+ protected:
+  constexpr static double k_medianProbability = 0.5;
+  virtual void compute(int indexKnownElement) = 0;
+  virtual void computeUnknownDistributionParameter() { assert(false); }
+  Distribution* m_distribution;
+};
+
+}  // namespace Distributions

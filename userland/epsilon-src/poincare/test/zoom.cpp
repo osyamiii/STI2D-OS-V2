@@ -1,0 +1,200 @@
+#include <poincare/numeric_solver/zoom.h>
+#include <poincare/src/expression/projection.h>
+#include <poincare/src/expression/simplification.h>
+
+#include <cmath>
+
+#include "helper.h"
+
+using namespace Poincare;
+using namespace Poincare::Internal;
+
+// When adding the graph window margins, this ratio gives an orthonormal window
+constexpr float k_normalRatio = 0.442358822;
+constexpr float k_floatRangeTolerance = 0.05f;
+constexpr float k_maxFloat = 1e8f;
+
+constexpr double k_doubleRangeTolerance = 0.01;
+
+/* Class befriended by Poincare::Zoom to be able to read its members. */
+template <typename T>
+class ZoomTest {
+ public:
+  ZoomTest() : m_zoom(k_normalRatio, Range1D<T>::k_maxFloat) {}
+
+  Zoom<T>* zoom() { return &m_zoom; }
+  Range2D<T> interestingRange() const { return m_zoom.m_interestingRange; }
+
+ private:
+  Zoom<T> m_zoom;
+};
+
+template <typename T>
+void assert_ranges_equal(Range1D<T> observed, Range1D<T> expected,
+                         const char* errorMessage = "") {
+  /* The range computed by Poincare::Zoom can differ from the ideal range
+   * because:
+   * - the function is only sampled a finite number of times, and can miss the
+   *   peaks and valleys.
+   * - searching for points of interest is done in single precision, without
+   *   the use of Brent's methods to refine the points. */
+  quiz_assert_print_if_failure(observed.isNan() == expected.isNan(),
+                               errorMessage);
+  if (expected.isNan()) {
+    return;
+  }
+
+  T rangeTolerance = sizeof(T) == sizeof(float) ? k_floatRangeTolerance
+                                                : k_doubleRangeTolerance;
+  T epsilon = sizeof(T) == sizeof(float) ? FLT_EPSILON : DBL_EPSILON;
+
+  T dl = std::max(rangeTolerance *
+                      std::max(expected.length(), std::fabs(expected.center())),
+                  epsilon);
+  quiz_assert_print_if_failure(std::fabs(observed.min() - expected.min()) <= dl,
+                               errorMessage);
+  quiz_assert_print_if_failure(std::fabs(observed.max() - expected.max()) <= dl,
+                               errorMessage);
+}
+
+template <typename T>
+void assert_ranges_equal(Range2D<T> observed, Range2D<T> expected,
+                         const char* errorMessage = "") {
+  assert_ranges_equal(*observed.x(), *expected.x(), errorMessage);
+  assert_ranges_equal(*observed.y(), *expected.y(), errorMessage);
+}
+
+template <typename T>
+Coordinate2D<T> expressionEvaluator(T t, const void* model) {
+  const Tree* e = static_cast<const Tree*>(model);
+  return Coordinate2D<T>(
+      t, Approximation::To<T>(
+             e, t, Approximation::Parameters{.policy = {.optimize = true}}));
+}
+
+template <typename T>
+void assert_points_of_interest_range_is(const char* expression,
+                                        Range2D<T> expectedRange) {
+  Tree* e = parseAndPrepareForApproximation(
+      expression, UserParameters{.angleUnit = Poincare::AngleUnit::Radian});
+  ZoomTest<T> zoom;
+  zoom.zoom()->fitPointsOfInterest(expressionEvaluator<T>, e,
+                                   Range1D<T>(-k_maxFloat, k_maxFloat), false,
+                                   false, expressionEvaluator<double>);
+  e->removeTree();
+  assert_ranges_equal(zoom.interestingRange(), expectedRange, expression);
+}
+
+QUIZ_CASE(pcj_zoom_fit_points_of_interest) {
+  assert_points_of_interest_range_is("1", Range2D<float>());
+  assert_points_of_interest_range_is("x", Range2D<float>(0, 0, 0, 0));
+  assert_points_of_interest_range_is("x-30", Range2D<float>(30, 30, 0, 0));
+  assert_points_of_interest_range_is("-11x+100",
+                                     Range2D<float>(9.091, 9.091, 0, 0));
+  assert_points_of_interest_range_is("x^2", Range2D<float>(0, 0, 0, 0));
+  assert_points_of_interest_range_is("(x-10)(x+10)",
+                                     Range2D<float>(-10, 10, -100, 0));
+  assert_points_of_interest_range_is(
+      "e^(-x)", Range2D<float>(1.803, 1.803, 0.165, 0.165));
+  assert_points_of_interest_range_is(
+      "√(x^2+1)-x", Range2D<float>(1.483, 1.483, 0.306, 0.306));
+  assert_points_of_interest_range_is("x(x-1)(x-2)(x-3)(x-4)(x-5)",
+                                     Range2D<float>(0, 5, -16.901, 5.046));
+  assert_points_of_interest_range_is(
+      "1/x", Range2D<float>(-2.416, 2.416, -0.414, 0.414));
+  assert_points_of_interest_range_is(
+      "1+(x+1)^(-4)", Range2D<float>(-3.073, 0.911, 1.053, 1.075));
+  assert_points_of_interest_range_is(
+      "2+1/(x^2+x+1)", Range2D<float>(-2.663, 1.558, 2.184, 3.333));
+  assert_points_of_interest_range_is("√(x)",
+                                     Range2D<float>(0, 7.422, 0, 2.724));
+  assert_points_of_interest_range_is(
+      "√(x+1)-2", Range2D<float>(-1.000, 6.237, 0.000, 0.690));
+  assert_points_of_interest_range_is("ln(x)",
+                                     Range2D<float>(0, 5.792, 0, 1.756));
+  assert_points_of_interest_range_is("sin(x)",
+                                     Range2D<float>(-8.028, 8.028, -1, 1));
+  assert_points_of_interest_range_is("sin(π*x/180)",
+                                     Range2D<float>(-450, 450, -1, 1));
+  assert_points_of_interest_range_is("cos(x+1)+2",
+                                     Range2D<float>(-7.287, 8.432, 1, 3));
+  assert_points_of_interest_range_is("x*ln(x)",
+                                     Range2D<float>(0, 1, -0.368, 0));
+  assert_points_of_interest_range_is(
+      "(e^x-1)/(e^x+1)", Range2D<float>(-2.309, 2.309, -0.819, 0.819));
+  assert_points_of_interest_range_is(
+      "(e^x-1)*(e^x+1)^(-1)", Range2D<float>(-2.309, 2.309, -0.819, 0.819));
+  assert_points_of_interest_range_is("10-1/(3^x)",
+                                     Range2D<float>(-2.096, 1.723, 0, 9.849));
+  // TODO: should be focused on the right part of the curve ~(-1,3,0,8)
+  assert_points_of_interest_range_is("x^x",
+                                     Range2D<float>(-30.46, 0.3682, 0, 0.6922));
+  // TODO: Fails on Linux with xMin = -1.0077, to investigate
+  //   assert_points_of_interest_range_is(
+  //       "root(x^3+1,3)-x", Range2D<float>(-1.733, 1.478, 0.119, 1.587));
+  assert_points_of_interest_range_is(
+      "sum((((-1)^k)*(x^(2k+1)))/((2k+1)!),k,0,4)",
+      Range2D<float>(-4.968, 4.968, -1, 1));
+  assert_points_of_interest_range_is(
+      "200e^(x/5)(7+e^(x/5))^(-1)",
+      Range2D<float>(-18.68, 38.84, 0.6786, 199.4));
+
+  assert_points_of_interest_range_is("x*ln(x)",
+                                     Range2D<double>(0, 1, -0.368, 0));
+
+  assert_points_of_interest_range_is(
+      "arcsin(arcsin(x))", Range2D<double>(-0.841629, 0.841629, 0, 0));
+}
+
+void assert_intersections_range_is(const char* expression1,
+                                   const char* expression2,
+                                   Range2D<float> expectedRange) {
+  TreeRef e1 = parseAndPrepareForApproximation(expression1, k_realParams);
+  TreeRef e2 = parseAndPrepareForApproximation(expression2, k_realParams);
+  ZoomTest<float> zoom;
+  zoom.zoom()->fitIntersections(expressionEvaluator, e1, expressionEvaluator,
+                                e2, Range1D<float>(-k_maxFloat, k_maxFloat));
+  e1->removeTree();
+  e2->removeTree();
+  assert_ranges_equal(zoom.interestingRange(), expectedRange, expression1);
+}
+
+QUIZ_CASE(pcj_zoom_fit_intersections) {
+  assert_intersections_range_is("x/2+2", "2x-1", Range2D<float>(2, 2, 3, 3));
+  assert_intersections_range_is("x^2", "-x^2/3+x",
+                                Range2D<float>(0, 0.75, 0, 0.5631));
+}
+
+QUIZ_CASE(pcj_zoom_fit_abscissa) {
+  ZoomTest<float> zoom;
+  zoom.zoom()->fitAbscissa(0.f);
+  zoom.zoom()->fitAbscissa(1.f);
+  zoom.zoom()->fitAbscissa(-10.f, true);
+  zoom.zoom()->fitAbscissa(10.f, true);
+  assert_ranges_equal(zoom.interestingRange(),
+                      Range2D<float>(0.f, 1.f, -10.f, 10.f),
+                      "Zoom fit abscissa failed");
+}
+
+void assert_sanitized_range_is(Range2D<float> inputRange,
+                               Range2D<float> expectedRange) {
+  assert_ranges_equal(
+      Zoom<float>::Sanitize(inputRange, k_normalRatio, k_maxFloat),
+      expectedRange);
+}
+
+QUIZ_CASE(pcj_zoom_sanitation) {
+  assert_ranges_equal(Zoom<float>::DefaultRange(k_normalRatio, k_maxFloat),
+                      Range2D<float>(-10, 10, -4.42358822, 4.42358822));
+  assert_ranges_equal(Zoom<float>::DefaultRange(1, k_maxFloat),
+                      Range2D<float>(-10, 10, -10, 10));
+
+  assert_sanitized_range_is(
+      Range2D<float>(Range1D<float>(-5, 5), Range1D<float>()),
+      Range2D<float>(-5, 5, -2.211794, 2.211794));
+  assert_sanitized_range_is(
+      Range2D<float>(), Zoom<float>::DefaultRange(k_normalRatio, k_maxFloat));
+  assert_sanitized_range_is(
+      Range2D<float>(0, 0, 0, 0),
+      Zoom<float>::DefaultRange(k_normalRatio, k_maxFloat));
+}

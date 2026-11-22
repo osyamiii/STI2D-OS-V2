@@ -1,0 +1,49 @@
+#pragma once
+
+#include <apps/global_preferences.h>
+#include <apps/shared/double_pair_store.h>
+#include <apps/shared/double_pair_store_preferences.h>
+
+namespace Statistics {
+
+// These preferences are memoized in snapshot.
+
+class UserPreferences : public Shared::DoublePairStorePreferences {
+ public:
+  UserPreferences()
+      : m_barWidth(1.f),
+        m_firstDrawnBarAbscissa(0.f),
+        m_displayOutliers(false),
+        m_displayCumulatedFrequencies{false, false, false} {}
+
+  bool displayCumulatedFrequencies(int series) {
+    assert(ValidSeriesIndex(series));
+    return m_displayCumulatedFrequencies[series];
+  }
+  void setDisplayCumulatedFrequencies(int series, bool value) {
+    assert(ValidSeriesIndex(series));
+    m_displayCumulatedFrequencies[series] = value;
+  }
+
+  double barWidth() { return m_barWidth; }
+  void setBarWidth(double value) { m_barWidth = value; }
+
+  double firstDrawnBarAbscissa() { return m_firstDrawnBarAbscissa; }
+  void setFirstDrawnBarAbscissa(double value) {
+    m_firstDrawnBarAbscissa = value;
+  }
+
+  bool displayOutliers() { return m_displayOutliers; }
+  void setDisplayOutliers(bool value) { m_displayOutliers = value; }
+
+ private:
+  // Graph preferences
+  double m_barWidth;
+  double m_firstDrawnBarAbscissa;
+  bool m_displayOutliers;
+  // Cumulated frequencies column display
+  std::array<bool, Shared::DoublePairStore::k_numberOfSeries>
+      m_displayCumulatedFrequencies;
+};
+
+}  // namespace Statistics

@@ -1,0 +1,215 @@
+#include "list_controller.h"
+
+#include <apps/global_preferences.h>
+#include <assert.h>
+#include <escher/theme/color_picker.h>
+#include <poincare/helpers/symbol.h>
+
+#include <algorithm>
+
+#include "../app.h"
+#include "poincare/helpers/sequence.h"
+#include "shared/global_store.h"
+
+using namespace Shared;
+using namespace Poincare;
+using namespace Escher;
+
+namespace Sequence {
+
+ListController::ListController(Responder* parentResponder,
+                               ButtonRowController* header,
+                               ButtonRowController* footer)
+    : Shared::FunctionListController(parentResponder, header, footer,
+                                     I18n::Message::AddSequence),
+      m_editableCell(this, this),
+      m_parameterController(this),
+      m_typeParameterController(this, this),
+      m_typeStackController(nullptr, &m_typeParameterController,
+                            StackViewController::Style::PurpleWhite) {}
+
+KDCoordinate ListController::expressionRowHeight(int row) {
+  assert(typeAtRow(row) == k_expressionCellType);
+  Shared::Sequence* sequence = modelStore()->modelForRecord(recordAtRow(row));
+  Layout layout = sequence->aggregatedLayout();
+  KDCoordinate sequenceHeight =
+      layout.isUninitialized() ? 0 : layout->layoutSize(k_font).height();
+  return sequenceHeight + 2 * k_defaultVerticalMargin;
+}
+
+/* ViewController */
+
+void ListController::viewWillAppear() {
+  // Reset memoization because a sequence could have been deleted
+  selectableListView()->resetSizeAndOffsetMemoization();
+  ExpressionModelListController::viewWillAppear();
+  App::app()->defaultToolbox()->setExtraCellsDataSource(
+      &m_sequenceToolboxDataSource);
+}
+
+void ListController::viewDidDisappear() {
+  ExpressionModelListController::viewDidDisappear();
+  App::app()->defaultToolbox()->setExtraCellsDataSource(nullptr);
+}
+
+HighlightCell* ListController::reusableCell(int index, int type) {
+  assert(index >= 0 && index < maxNumberOfDisplayableRows());
+  switch (type) {
+    case k_expressionCellType:
+      return &m_sequenceCells[index];
+    case k_editableCellType:
+      return &m_editableCell;
+    default:
+      assert(type == k_addNewModelCellType);
+      return &m_addNewModelCell;
+  }
+}
+
+void ListController::fillCellForRow(HighlightCell* cell, int row) {
+  int type = typeAtRow(row);
+  if (type == k_expressionCellType || type == k_editableCellType) {
+    AbstractSequenceCell* sequenceCell =
+        static_cast<AbstractSequenceCell*>(cell);
+    ThemeComponent nameColor = ThemeComponent::TextGrayDark;
+    if (type == k_expressionCellType || !isAddingNewModel()) {
+      Shared::Sequence* sequence =
+          modelStore()->modelForRecord(recordAtRow(row));
+      if (sequence->isActive()) {
+        nameColor = sequence->color();
+      }
+      if (type == k_expressionCellType) {
+        fillExpressionCellForRow(sequenceCell->mainCell(), row);
+      }
+    }
+    sequenceCell->setColor(nameColor);
+    sequenceCell->setParameterSelected(m_parameterColumnSelected);
+  } else {
+    assert(type == k_addNewModelCellType);
+  }
+  FunctionListController::fillCellForRow(cell, row);
+}
+
+/* MathLayoutFieldDelegate */
+
+void ListController::layoutFieldDidAbortEditing(LayoutField* layoutField) {
+  if (!isAddingNewModel()) {
+    /* Remove sequence if main expression is empty (after insertion from
+     * template) */
+    Shared::Sequence* sequence = modelStore()->modelForRecord(selectedRecord());
+    if (sequence->layout().isEmpty()) {
+      removeModelRow(selectedRecord());
+      int newSelectedRow =
+          selectedRow() >= numberOfRows() ? numberOfRows() - 1 : selectedRow();
+      selectRow(newSelectedRow);
+    }
+  }
+
+  // Parent's layoutFieldDidAbortEditing will set m_isAddingNewModel to false
+  ExpressionModelListController::layoutFieldDidAbortEditing(layoutField);
+}
+
+bool ListController::layoutFieldDidReceiveEvent(LayoutField* layoutField,
+                                                Ion::Events::Event event) {
+  if (event == Ion::Events::Toolbox) {
+    // Set extra cells
+    const char* sequenceName;
+    int recurrenceDepth;
+    SequenceHelper::RecursiveNotation notation;
+    if (isAddingNewModel()) {
+      sequenceName = SequenceStore::FirstAvailableName();
+      // New model is always explicit.
+      recurrenceDepth = 0;
+      notation = SequenceHelper::RecursiveNotation::Default;
+    } else {
+      Shared::Sequence* sequence =
+          modelStore()->modelForRecord(selectedRecord());
+      sequenceName = sequence->fullName();
+      recurrenceDepth = sequence->order();
+      notation = sequence->recursiveNotation();
+    }
+    m_sequenceToolboxDataSource.buildExtraCellsLayouts(
+        sequenceName, recurrenceDepth,
+        notation == SequenceHelper::RecursiveNotation::Shifted);
+  }
+  return ExpressionModelListController::layoutFieldDidReceiveEvent(layoutField,
+                                                                   event);
+}
+
+bool ListController::isAcceptableExpression(
+    const UserExpression& expression, const SymbolContext& symbolContext) {
+  // Only accept scalar values
+  return MathLayoutFieldDelegate::isAcceptableExpression(expression,
+                                                         symbolContext) &&
+         SequenceHelper::IsOfValidDimension(expression, symbolContext);
+}
+
+void ListController::editExpression(Ion::Events::Event event) {
+  ExpressionModelListController::editExpression(event);
+  if (event == Ion::Events::OK || event == Ion::Events::EXE) {
+    // Perform backspace to start with cursor inside layout
+    ExpressionModelListController::editExpression(Ion::Events::Backspace);
+  }
+  m_editableCell.setHighlighted(true);
+  // Invalidate the sequences context cache
+  App::app()->localContext().resetCache();
+}
+
+bool ListController::setSelectedRecordContent(const Poincare::Layout& layout) {
+  Shared::Sequence* sequence = modelStore()->modelForRecord(selectedRecord());
+  return sequence->setLayoutsForAggregated(layout,
+                                           App::app()->localContext()) ==
+         Ion::Storage::Record::ErrorStatus::None;
+}
+
+Layout ListController::getLayoutForSelectedRecord() const {
+  Ion::Storage::Record record = selectedRecord();
+  Shared::Sequence* sequence = modelStore()->modelForRecord(record);
+  return sequence->aggregatedLayout();
+}
+
+void ListController::fillExpressionCellForRow(HighlightCell* cell, int row) {
+  assert(typeAtRow(row) == k_expressionCellType);
+  Escher::EvenOddExpressionCell* myCell =
+      static_cast<Escher::EvenOddExpressionCell*>(cell);
+  Ion::Storage::Record record = recordAtRow(row);
+  Shared::Sequence* sequence = modelStore()->modelForRecord(record);
+  // Set the color
+  ThemeComponent textColor = sequence->isActive()
+                                 ? ThemeComponent::TextDefault
+                                 : ThemeComponent::TextDeactivated;
+  myCell->setTextColor(textColor);
+  // Set the layout
+  return myCell->setLayout(sequence->aggregatedLayout());
+}
+
+void ListController::didChangeModelsList() {
+  ExpressionModelListController::didChangeModelsList();
+  if (modelStore()->numberOfModels() == 0) {
+    App::app()->snapshot()->resetInterval();
+  } else {
+    App::app()->snapshot()->updateInterval();
+  }
+}
+
+void ListController::addNewModelAction() {
+  App::app()->displayModalViewController(&m_typeStackController, 0.f, 0.f,
+                                         Metric::PopUpMarginsNoBottom);
+}
+
+void ListController::removeModelRow(Ion::Storage::Record record) {
+  Shared::FunctionListController::removeModelRow(record);
+  // Invalidate the sequences context cache
+  App::app()->localContext().resetCache();
+}
+
+SequenceStore* ListController::modelStore() const {
+  return &GlobalContextAccessor::SequenceStore();
+}
+
+void ListController::showLastSequence() {
+  selectableListView()->resetSizeAndOffsetMemoization();
+  int lastSequenceRow = numberOfRows() - hasAddModelRow() - 1;
+  selectableListView()->scrollToCell(lastSequenceRow);
+}
+
+}  // namespace Sequence

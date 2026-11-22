@@ -1,0 +1,24 @@
+ifeq ($(PLATFORM),android)
+TERMS_OF_USE := 1
+# If MICROPY_NLR_SETJMP is 0, the MicroPython NLR is done by
+# python/src/py/nlrthumb.c and creates code containing relocations, which is not
+# accepted by Android.
+SFLAGS += -DMICROPY_NLR_SETJMP=1
+else
+TERMS_OF_USE := 0
+endif
+
+APP_BUNDLE_ID := com.numworks.calculator
+APP_FULL_NAME := NumWorks Graphing Calculator
+
+EPSILON_GETOPT := 1
+
+ifeq ($(PLATFORM),linux)
+# If MICROPY_NLR_SETJMP is 0, the MicroPython NLR done by
+# python/src/py/nlrx64.c crashes on linux.
+SFLAGS += -DMICROPY_NLR_SETJMP=1
+endif
+
+SFLAGS += \
+  -DTERMS_OF_USE=$(TERMS_OF_USE) \
+  -DEPSILON_GETOPT=$(EPSILON_GETOPT)

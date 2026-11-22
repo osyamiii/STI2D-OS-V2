@@ -1,0 +1,148 @@
+#pragma once
+
+#include <poincare/src/memory/tree.h>
+#include <poincare/symbol_context.h>
+
+#include "dimension_type.h"
+
+namespace Poincare {
+
+namespace Internal {
+
+class Tree;
+
+struct Dimension {
+  constexpr Dimension(DimensionType type = DimensionType::None)
+      : type(type), matrix({0, 0}) {
+    assert(type == DimensionType::Scalar || type == DimensionType::Boolean ||
+           type == DimensionType::Point || type == DimensionType::None);
+  };
+  Dimension(MatrixDimension iMatrix)
+      : type(DimensionType::Matrix), matrix(iMatrix){};
+  Dimension(UnitDimension iUnit) : type(DimensionType::Unit), unit(iUnit){};
+
+  static Dimension Scalar() { return Dimension(DimensionType::Scalar); }
+  static Dimension Boolean() { return Dimension(DimensionType::Boolean); }
+  static Dimension Point() { return Dimension(DimensionType::Point); }
+  static Dimension Matrix(uint8_t rows, uint8_t cols) {
+    return Dimension({.rows = rows, .cols = cols});
+  }
+  static Dimension Unit(Units::SIVector vector,
+                        const Units::Representative* representative) {
+    assert(!vector.isEmpty());
+    return Dimension({.vector = vector, .representative = representative});
+  }
+  static Dimension Unit(const Tree* unit);
+
+  bool operator==(const Dimension& other) const;
+  bool operator!=(const Dimension& other) const { return !(*this == other); };
+
+  bool isSanitized() const {
+    return !(isMatrix() && matrix.rows * matrix.cols == 0) &&
+           !(isUnit() && unit.vector.isEmpty());
+  }
+  bool isNone() const { return type == DimensionType::None; }
+  bool isScalar() const { return type == DimensionType::Scalar; }
+  bool isMatrix() const {
+    return POINCARE_MATRIX && type == DimensionType::Matrix;
+  }
+  bool isUnit() const { return POINCARE_UNIT && type == DimensionType::Unit; }
+  bool isBoolean() const {
+    return POINCARE_BOOLEAN && type == DimensionType::Boolean;
+  }
+  bool isPoint() const {
+    return POINCARE_POINT && type == DimensionType::Point;
+  }
+  bool isScalarOrUnit() const {
+    return type == DimensionType::Scalar || type == DimensionType::Unit;
+  }
+
+  bool isSquareMatrix() const {
+    return isMatrix() && matrix.rows == matrix.cols;
+  }
+  bool isVector() const {
+    return isMatrix() && (matrix.rows == 1 || matrix.cols == 1);
+  }
+  bool isAngleUnit() const {
+    return isUnit() && unit.vector.angle != 0 && unit.vector.supportSize() == 1;
+  }
+  bool isSimpleAngleUnit() const {
+    return isAngleUnit() && unit.vector.angle == 1;
+  }
+  bool isSimpleRadianAngleUnit() const;
+  bool hasNonKelvinTemperatureUnit() const;
+
+  constexpr static int k_nonListListLength = -1;
+  // Return k_nonListListLength if tree isn't a list.
+  static int ListLength(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{});
+  static bool IsList(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{}) {
+    return ListLength(e, symbolContext) != k_nonListListLength;
+  }
+  static Dimension Get(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{});
+  static bool DeepCheck(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{}) {
+    return DeepCheckDimensions(e, symbolContext) &&
+           DeepCheckListLength(e, symbolContext);
+  }
+  static bool IsNonListScalar(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{}) {
+    return Get(e, symbolContext).isScalar() && !IsList(e, symbolContext);
+  }
+
+  DimensionType type;
+  union {
+    MatrixDimension matrix;
+    UnitDimension unit;
+  };
+#if POINCARE_TREE_LOG
+  /* LCOV_EXCL_START */
+  void log() {
+    switch (type) {
+      case DimensionType::Scalar:
+        std::cout << "Scalar" << std::endl;
+        return;
+      case DimensionType::Unit:
+        // TODO more detailed log of units
+        std::cout << "Unit" << std::endl;
+        return;
+      case DimensionType::Boolean:
+        std::cout << "Boolean" << std::endl;
+        return;
+      case DimensionType::Point:
+        std::cout << "Point" << std::endl;
+        return;
+      case DimensionType::Matrix:
+        std::cout << "Matrix (" << (int)matrix.rows << ',' << (int)matrix.cols
+                  << ')' << std::endl;
+        return;
+      case DimensionType::None:
+        std::cout << "None" << std::endl;
+        return;
+    }
+  }
+  /* LCOV_EXCL_STOP */
+#endif
+
+ private:
+  static bool DeepCheckDimensions(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{});
+  static bool DeepCheckDimensionsAux(
+      const Tree* e, const Poincare::SymbolContext& symbolContext,
+      bool hasUnitChild, bool hasNonKelvinChild);
+  static bool DeepCheckListLength(
+      const Tree* e,
+      const Poincare::SymbolContext& symbolContext = EmptySymbolContext{});
+};
+
+}  // namespace Internal
+
+}  // namespace Poincare

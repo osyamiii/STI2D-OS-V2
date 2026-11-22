@@ -1,0 +1,144 @@
+#pragma once
+
+#include <omg/unicode_helper.h>
+#include <omg/utf8_decoder.h>
+#include <stdint.h>
+
+#include "code_point_layout.h"
+#include "layout_span.h"
+#include "rack.h"
+
+namespace Poincare::Internal {
+
+/* LayoutSpanDecoder adds state over the LayoutSpan and is a
+ * ForwardUnicodeDecoder (it can move forward but not backward)
+ * It has to be copied to get back to a previous state.
+ */
+class LayoutSpanDecoder : public ForwardUnicodeDecoder {
+ public:
+  LayoutSpanDecoder(const Layout* start, size_t length)
+      : ForwardUnicodeDecoder(0, length),
+        m_layout(start),
+        m_length(static_cast<uint16_t>(length)) {
+    assert(m_length == m_end - m_position);
+    /*  If a LayoutSpanDecoder is constructed with a very long length, it is
+     * probably due to a size_t overflow */
+    assert(length <= UINT16_MAX);
+  }
+
+  LayoutSpanDecoder(const Rack* rack, size_t initialPosition = 0,
+                    size_t lastPosition = k_noSize)
+      : LayoutSpanDecoder(
+            initialPosition == 0 ? static_cast<const Layout*>(rack->nextNode())
+            /* initialPosition is allowed to be lastPosition for
+             * convenience, in that case m_layout is nullptr and
+             * should not be dereferenced */
+            : static_cast<int>(initialPosition) < rack->numberOfChildren()
+                ? rack->child(initialPosition)
+                : nullptr,
+            (lastPosition == k_noSize ? rack->numberOfChildren()
+                                      : lastPosition) -
+                initialPosition) {
+    /* Entering this constructor with lastPosition < initialPosition indicates
+     * that something unexpected or wrong happened. */
+    assert(lastPosition >= initialPosition);
+  }
+
+  explicit LayoutSpanDecoder(LayoutSpan span)
+      : LayoutSpanDecoder(span.data(), span.size()) {}
+
+  bool isEmpty() const override { return m_length == 0; }
+
+  /* Return the address pointed by m_layout. It can be a corrupted tree if
+   * isEmpty(). */
+  const Tree* layoutUnsafe() const {
+    assert(m_length != k_outOfRange);
+    return m_layout;
+  }
+
+  const Layout* layout() const {
+    assert(m_length != k_outOfRange && !isEmpty());
+    return m_layout;
+  }
+
+  CodePoint codePoint() override {
+    if (isEmpty()) {
+      return UCodePointNull;
+    }
+
+    assert(m_layout != nullptr);
+    assert(m_length != k_outOfRange);
+
+    if (m_layout->isCombinedCodePointsLayout()) {
+      return m_isOnCombining ? CodePointLayout::GetCombiningCodePoint(m_layout)
+                             : CodePointLayout::GetCodePoint(m_layout);
+    }
+    assert(!m_isOnCombining);
+    return m_layout->isCodePointLayout()
+               ? CodePointLayout::GetCodePoint(m_layout)
+               : UCodePointNull;
+  }
+
+  CodePoint nextCodePoint() override {
+    CodePoint cp = codePoint();
+    next();
+    return cp;
+  }
+
+  bool nextLayoutIsCodePoint() const {
+    /* Return true if the decoder is empty for functions that are looping on
+     * codepoints until they hit a null codepoints. */
+    assert(m_layout != nullptr);
+    assert(m_length != k_outOfRange);
+    return m_length == 0 || m_layout->isCodePointLayout() ||
+           m_layout->isCombinedCodePointsLayout();
+  }
+
+  const Layout* nextLayout() {
+    const Layout* result = layout();
+    next();
+    return result;
+  }
+
+  LayoutSpan toSpan() const { return LayoutSpan{m_layout, m_length}; }
+
+  void skip(int n) {
+    while (n--) {
+      next();
+    }
+  }
+
+  void skipTree(int n) {
+    assert(!m_isOnCombining);
+    const Layout* newLayout = m_layout;
+    for (int i = 0; i < n; i++) {
+      newLayout = static_cast<const Layout*>(newLayout->nextTree());
+    }
+    while (m_layout != newLayout && m_length > 0) {
+      next();
+    }
+    assert(!m_isOnCombining);
+  }
+
+ private:
+#if ASSERTIONS
+  /* For optimization purposes, the next() function can be called when m_length
+   * is 0, but only once. After this last call, m_layout becomes invalid as well
+   */
+  constexpr static uint16_t k_outOfRange = UINT16_MAX;
+#endif
+
+  void next();
+  const Layout* m_layout;  // allowed to be a nullptr
+  uint16_t m_length;
+  bool m_isOnCombining = false;
+};
+
+inline int CompareLayoutSpanWithNullTerminatedString(const LayoutSpan a,
+                                                     const char* b) {
+  LayoutSpanDecoder da(a.data(), a.size());
+  UTF8Decoder db(b);
+  return OMG::CompareDecoders(&da, &db);
+}
+
+}  // namespace Poincare::Internal

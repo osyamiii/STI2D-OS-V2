@@ -1,0 +1,361 @@
+#include "store.h"
+
+#include <assert.h>
+#include <float.h>
+#include <ion/storage/file_system.h>
+#include <omg/print.h>
+#include <poincare/code_points.h>
+#include <poincare/helpers/symbol_pool.h>
+#include <poincare/preferences.h>
+#include <string.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+
+#include "app.h"
+#include "shared/global_store.h"
+
+using namespace Poincare;
+using namespace Shared;
+
+namespace Regression {
+
+const char* Store::SeriesTitle(int series) {
+  /* Controller titles for menus targetting a specific series. These cannot
+   * live on the stack and must be const char *. */
+  assert(series >= 0 && series < static_cast<int>(k_seriesTitles.size()));
+  return k_seriesTitles[static_cast<size_t>(series)];
+}
+
+Store::Store(DoublePairStorePreferences* preferences,
+             Model::Type* regressionTypes)
+    : LinearRegressionStore(preferences),
+      m_regressionTypes(regressionTypes),
+      m_recomputeCoefficients{true, true, true} {
+  initListsFromStorage();
+}
+
+void Store::reset() {
+  deleteAllPairs();
+  resetMemoization();
+}
+
+/* Regressions */
+void Store::setSeriesRegressionType(int series, Model::Type type) {
+  assert(series >= 0 && series < k_numberOfSeries);
+  if (m_regressionTypes[series] != type) {
+    m_regressionTypes[series] = type;
+    m_recomputeCoefficients[series] = true;
+  }
+}
+
+/* Dots */
+
+int Store::closestVerticalDot(OMG::VerticalDirection direction, double x,
+                              double y, int currentSeries, int currentDot,
+                              int* nextSeries) {
+  double nextX = INFINITY;
+  double nextY = INFINITY;
+  int nextDot = -1;
+  for (int series = 0; series < k_numberOfSeries; series++) {
+    if (!seriesIsActive(series) ||
+        (currentDot >= 0 && currentSeries == series)) {
+      /* If the currentDot is valid, the next series should not be the current
+       * series */
+      continue;
+    }
+    int numberOfDots = numberOfPairsOfSeries(series);
+    float xMin = App::app()->graphRange()->xMin();
+    float xMax = App::app()->graphRange()->xMax();
+    bool displayMean = seriesSatisfies(series, HasCoefficients);
+    for (int i = 0; i < numberOfDots + displayMean; i++) {
+      double currentX =
+          i < numberOfDots ? get(series, 0, i) : meanOfColumn(series, 0);
+      double currentY =
+          i < numberOfDots ? get(series, 1, i) : meanOfColumn(series, 1);
+      if (xMin <= currentX &&
+          // The next dot is within the window abscissa bounds
+          currentX <= xMax &&
+          // The next dot is the closest to x in abscissa
+          (std::fabs(currentX - x) <= std::fabs(nextX - x)) &&
+          // The next dot is above/under y
+          ((currentY > y && direction.isUp()) ||
+           (currentY < y && direction.isDown()) ||
+           (currentY == y &&
+            ((currentDot < 0 && direction.isUp()) ||
+             ((direction.isDown()) == (series > currentSeries))))) &&
+          // Edge case: if 2 dots have the same abscissa but different ordinates
+          (nextX != currentX || ((currentY <= nextY) == (direction.isUp())))) {
+        nextX = currentX;
+        nextY = currentY;
+        nextDot = i;
+        *nextSeries = series;
+      }
+    }
+  }
+  return nextDot;
+}
+
+int Store::nextDot(int series, OMG::HorizontalDirection direction, int dot,
+                   bool displayMean) {
+  double nextX = INFINITY;
+  int nextDot = -1;
+  double meanX = meanOfColumn(series, 0);
+  double x = meanX;
+  if (dot >= 0 && dot < numberOfPairsOfSeries(series)) {
+    x = get(series, 0, dot);
+  }
+  /* We have to scan the Store in opposite ways for the 2 directions to ensure
+   * to select all dots (even with equal abscissa) */
+  if (direction.isRight()) {
+    for (int index = 0; index < numberOfPairsOfSeries(series); index++) {
+      double data = get(series, 0, index);
+      /* The conditions to test are in this order:
+       * - the next dot is the closest one in abscissa to x
+       * - the next dot is not the same as the selected one
+       * - the next dot is at the right of the selected one */
+      if (std::fabs(data - x) < std::fabs(nextX - x) && (index != dot) &&
+          (data >= x)) {
+        // Handle edge case: 2 dots have same abscissa
+        if (data != x || (index > dot)) {
+          nextX = data;
+          nextDot = index;
+        }
+      }
+    }
+    // Compare with the mean dot
+    if (displayMean && std::fabs(meanX - x) < std::fabs(nextX - x) &&
+        (numberOfPairsOfSeries(series) != dot) && (meanX >= x)) {
+      if (meanX != x || (numberOfPairsOfSeries(series) > dot)) {
+        nextDot = numberOfPairsOfSeries(series);
+      }
+    }
+  } else {
+    assert(direction.isLeft());
+    // Compare with the mean dot
+    if (displayMean && std::fabs(meanX - x) < std::fabs(nextX - x) &&
+        (numberOfPairsOfSeries(series) != dot) && (meanX <= x)) {
+      if ((meanX != x) || (numberOfPairsOfSeries(series) < dot)) {
+        nextX = meanX;
+        nextDot = numberOfPairsOfSeries(series);
+      }
+    }
+    for (int index = numberOfPairsOfSeries(series) - 1; index >= 0; index--) {
+      double data = get(series, 0, index);
+      if (std::fabs(data - x) < std::fabs(nextX - x) && (index != dot) &&
+          (data <= x)) {
+        // Handle edge case: 2 dots have same abscissa
+        if (data != x || (index < dot)) {
+          nextX = data;
+          nextDot = index;
+        }
+      }
+    }
+  }
+  return nextDot;
+}
+
+/* Series */
+
+void Store::updateSeriesValidity(int series) {
+  LinearRegressionStore::updateSeriesValidity(series);
+  if (!seriesIsValid(series)) {
+    // Reset series regression type to None
+    m_regressionTypes[series] = Model::Type::None;
+    deleteStoredElements(series);
+  }
+}
+
+bool Store::updateSeries(int series, bool delayUpdate) {
+  m_recomputeCoefficients[series] = true;
+  return DoublePairStore::updateSeries(series, delayUpdate);
+}
+
+/* Calculations */
+
+void Store::updateCoefficients(int series) {
+  assert(series >= 0 && series <= k_numberOfSeries);
+  assert(seriesIsActive(series));
+  if (!m_recomputeCoefficients[series]) {
+    return;
+  }
+
+  Model* seriesModel = modelForSeries(series);
+  seriesModel->fit(this, series, m_regressionCoefficients[series]);
+  m_recomputeCoefficients[series] = false;
+  /* TODO_PCJ: coefficients used to be Decimals and are now Doubles. Maybe this
+   * will be an issue ? */
+  storeElement(k_regressionFunctionBaseName, series,
+               seriesModel->expression(m_regressionCoefficients[series]));
+  storeElement(k_residualListBaseName, series,
+               seriesModel->residualList(this, series,
+                                         m_regressionCoefficients[series]));
+
+  if (!coefficientsAreDefined(series)) {
+    m_determinationCoefficient[series] = NAN;
+    m_residualStandardDeviation[series] = NAN;
+    return;
+  }
+
+  /* m_determinationCoefficient and m_residualStandardDeviation must be
+   * updated after m_recomputeCoefficients updates to avoid infinite recursive
+   * calls as computeDeterminationCoefficient and residualStandardDeviation
+   * call yValueForXValue which calls coefficientsForSeries which calls
+   * updateCoefficients */
+  m_determinationCoefficient[series] = computeDeterminationCoefficient(series);
+  m_residualStandardDeviation[series] =
+      computeResidualStandardDeviation(series);
+}
+
+double* Store::coefficientsForSeries(int series) {
+  updateCoefficients(series);
+  return m_regressionCoefficients[series];
+}
+
+bool Store::coefficientsAreDefined(int series, bool finite) {
+  double* coefficients = coefficientsForSeries(series);
+  int numberOfCoefficients = modelForSeries(series)->numberOfCoefficients();
+  for (int i = 0; i < numberOfCoefficients; i++) {
+    if (std::isnan(coefficients[i]) ||
+        (finite && !std::isfinite(coefficients[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+double Store::correlationCoefficient(int series) const {
+  return modelForSeries(series)->correlationCoefficient(this, series);
+}
+
+double Store::determinationCoefficientForSeries(int series) {
+  /* Returns the Determination coefficient (R2).
+   * It will be updated if the regression has been updated */
+  updateCoefficients(series);
+  return m_determinationCoefficient[series];
+}
+
+double Store::residualStandardDeviation(int series) {
+  updateCoefficients(series);
+  return m_residualStandardDeviation[series];
+}
+
+void Store::resetMemoization() {
+  static_assert(static_cast<int>(Model::Type::None) == 0,
+                "None type should be default at 0");
+  memset(m_regressionTypes, 0, sizeof(Model::Type) * Store::k_numberOfSeries);
+  memset(m_recomputeCoefficients, 0, sizeof(m_recomputeCoefficients));
+}
+
+float Store::maxValueOfColumn(int series, int i) const {
+  float maxColumn = -FLT_MAX;
+  for (int k = 0; k < numberOfPairsOfSeries(series); k++) {
+    maxColumn = std::max<float>(maxColumn, get(series, i, k));
+  }
+  return maxColumn;
+}
+
+float Store::minValueOfColumn(int series, int i) const {
+  float minColumn = FLT_MAX;
+  for (int k = 0; k < numberOfPairsOfSeries(series); k++) {
+    minColumn = std::min<float>(minColumn, get(series, i, k));
+  }
+  return minColumn;
+}
+
+double Store::yValueForXValue(int series, double x) {
+  double* coefficients = coefficientsForSeries(series);
+  return modelForSeries(series)->evaluate(coefficients, x);
+}
+
+double Store::xValueForYValue(int series, double y) {
+  double* coefficients = coefficientsForSeries(series);
+  return modelForSeries(series)->levelSet(
+      coefficients, App::app()->graphRange()->xMin(),
+      App::app()->graphRange()->xMax(), y, GlobalContextAccessor::Context());
+}
+
+double Store::residualAtIndexForSeries(int series, int index) {
+  const double* modelCoefficients = coefficientsForSeries(series);
+  return modelForSeries(series)->residualAtIndex(this, series,
+                                                 modelCoefficients, index);
+}
+
+bool Store::AnyActiveSeriesSatisfies(TypeProperty property) const {
+  int numberOfDefinedSeries = numberOfActiveSeries();
+  for (int i = 0; i < numberOfDefinedSeries; i++) {
+    if (seriesSatisfies(seriesIndexFromActiveSeriesIndex(i), property)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+double Store::computeDeterminationCoefficient(int series) {
+  const double* modelCoefficients = coefficientsForSeries(series);
+  return modelForSeries(series)->determinationCoefficient(this, series,
+                                                          modelCoefficients);
+}
+
+double Store::computeResidualStandardDeviation(int series) {
+  const double* modelCoefficients = coefficientsForSeries(series);
+  return modelForSeries(series)->residualStandardDeviation(this, series,
+                                                           modelCoefficients);
+}
+
+Model* Store::regressionModel(Model::Type type) const {
+  /* Most of regression app still expects a Model * with ->name and (Store, int)
+   * API. We therefore cannot use directly a const Regression * pointer and need
+   * the Model object to live somewhere. This static instance is the only Model
+   * object and is reinitialized to point of the correct regression type
+   * on-the-fly. */
+  static Model s_model(Model::Type::None);
+  new (&s_model) Model(type);
+  return &s_model;
+}
+
+int Store::BuildStoredName(const char* baseName, int series,
+                           std::span<char> buffer) {
+  size_t length = strlcpy(buffer.data(), baseName, buffer.size());
+  length += OMG::Print::IntLeft(1 + series, buffer.data() + length,
+                                buffer.size() - length);
+  buffer[length] = 0;
+  return length;
+}
+
+Ion::Storage::Record Store::storedRecord(const char* baseName,
+                                         int series) const {
+  char name[k_nameBufferLength];
+  BuildStoredName(baseName, series, name);
+  return Ion::Storage::FileSystem::sharedFileSystem
+      ->recordBaseNamedWithExtension(name, ExtensionForBaseName(baseName));
+}
+
+void Store::storeElement(const char* baseName, int series,
+                         const UserExpression& expression) const {
+  if (expression.isUninitialized()) {
+    return deleteStoredElement(baseName, series);
+  }
+  char name[k_nameBufferLength];
+  BuildStoredName(baseName, series, name);
+  UserExpression expressionToStore =
+      expression.cloneAndReplaceSymbolWithUnknown(
+          SymbolHelper::BuildUserVariable(CodePoints::k_cartesianSymbol));
+  Ion::Storage::FileSystem::sharedFileSystem->createRecordWithExtension(
+      name, ExtensionForBaseName(baseName), expressionToStore.addressInPool(),
+      expressionToStore.size(), true);
+}
+
+void Store::deleteStoredElements(int series) const {
+  for (const char* const baseName : k_storedNames) {
+    deleteStoredElement(baseName, series);
+  }
+}
+
+void Store::deleteStoredElement(const char* baseName, int series) const {
+  Ion::Storage::Record r = storedRecord(baseName, series);
+  r.destroy();
+}
+
+}  // namespace Regression
